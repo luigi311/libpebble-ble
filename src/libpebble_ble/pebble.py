@@ -237,6 +237,68 @@ class Pebble:
             except Exception as e:
                 logger.debug(f"client teardown error: {e!r}")
 
+    async def _dbus_device_disconnect(self) -> None:
+        """Force BlueZ to drop any half-open link to the watch.
+
+        When a connect attempt dies mid service-discovery, bleak's client
+        never reaches is_connected=True, but BlueZ can still be holding the
+        ACL link (or believe it is). A raw Device1.Disconnect resets that
+        state so the next attempt starts clean.
+        """
+        bus = None
+        try:
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            path = self._device_path()
+            introspect = await bus.introspect(BLUEZ, path)
+            obj = bus.get_proxy_object(BLUEZ, path, introspect)
+            dev = obj.get_interface(DEVICE_IFACE)
+            await dev.call_disconnect()
+            logger.debug("forced BlueZ Device1.Disconnect")
+        except Exception as e:
+            logger.trace(f"Device1.Disconnect failed (probably already down): {e!r}")
+        finally:
+            if bus:
+                bus.disconnect()
+
+    async def _connect_client(self, timeout: float, attempts: int, retry_delay: float) -> dict:
+        """Resolve the watch and establish the GATT client link, retrying
+        transient failures. Returns the device's BlueZ properties snapshot.
+
+        Pebbles routinely drop the first connection attempt ("failed to
+        discover services, device disconnected") when they're still tearing
+        down a previous link or mid auto-reconnect; Gadgetbridge retries, and
+        so do we — with a BlueZ-level link reset and a growing pause between
+        attempts so the watch has time to settle.
+        """
+        last_error: Exception | None = None
+        for i in range(1, attempts + 1):
+            try:
+                device, props = await self._resolve_device(timeout)
+                self._client = BleakClient(device, timeout=timeout)
+                try:
+                    await self._client.connect()
+                except Exception as e:
+                    if "already connected" not in str(e).lower():
+                        raise
+                    logger.debug("device was already connected; attaching")
+                return props
+            except Exception as e:
+                last_error = e
+                logger.warning(f"connect attempt {i}/{attempts} to {self.address} failed: {e!r}")
+                await self._teardown_client()
+                await self._dbus_device_disconnect()
+                if i < attempts:
+                    delay = retry_delay * i
+                    logger.debug(f"retrying in {delay:.1f}s ...")
+                    await asyncio.sleep(delay)
+        msg = (
+            f"could not establish a GATT connection to {self.address} after "
+            f"{attempts} attempts (last error: {last_error!r}). The watch may "
+            f"still be settling from a previous session — try again in a few "
+            f"seconds, or toggle Bluetooth/Airplane mode on the watch."
+        )
+        raise RuntimeError(msg) from last_error
+
     async def _do_pairing(self, watch_initiated_wait: float = 10.0) -> bool:
         """Bond with the watch. Returns True once BlueZ reports Paired.
 
@@ -277,7 +339,13 @@ class Pebble:
         # A failed/raced Pair() can still land the bond a beat later.
         return await self._wait_paired(3.0)
 
-    async def connect(self, pairing: bool = True, timeout: float = 30.0):
+    async def connect(
+        self,
+        pairing: bool = True,
+        timeout: float = 30.0,
+        connect_attempts: int = 3,
+        retry_delay: float = 2.0,
+    ):
         self._loop = asyncio.get_running_loop()
 
         # 1. Bring up OUR GATT server FIRST (the 10000000 service). This is the
@@ -291,18 +359,12 @@ class Pebble:
 
         agent: PairingAgent | None = None
         try:
-            # 2. Resolve + connect + (if needed) bond. Two attempts: a failed
-            #    first pairing (typically AuthenticationFailed from a stale
-            #    host-side bond) clears the BlueZ device and retries fresh.
+            # 2. Resolve + connect (with transient-failure retries) + bond if
+            #    needed. Two pairing attempts: a failed first pairing
+            #    (typically AuthenticationFailed from a stale host-side bond)
+            #    clears the BlueZ device and retries fresh.
             for attempt in (1, 2):
-                device, known_props = await self._resolve_device(timeout)
-                self._client = BleakClient(device, timeout=timeout)
-                try:
-                    await self._client.connect()
-                except Exception as e:
-                    if "already connected" not in str(e).lower():
-                        raise
-                    logger.debug("device was already connected; attaching")
+                known_props = await self._connect_client(timeout, connect_attempts, retry_delay)
                 logger.success(f"connected to {self.address}")
 
                 already_bonded = bool(known_props.get("Paired") or known_props.get("Bonded"))
