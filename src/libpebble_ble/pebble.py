@@ -269,7 +269,7 @@ class Pebble:
     # ---- inbound Pebble Protocol dispatch ----
     def _on_pebble_message(self, message: bytes):
         endpoint, payload = protocol.pebble_unpack(message)
-        logger.debug(f"rx endpoint={endpoint} len={len(payload)}")
+        logger.trace(f"rx endpoint={endpoint} len={len(payload)}")
 
         if endpoint == Endpoint.PHONE_VERSION:
             self._on_phone_version(payload)
@@ -295,7 +295,7 @@ class Pebble:
     def _on_app_message_payload(self, payload: bytes):
         # Log the raw AppMessage bytes — invaluable for reconciling the watch's
         # actual command/transaction values against what we sent.
-        logger.debug(f"inbound APP_MESSAGE raw: {payload.hex()}")
+        logger.trace(f"inbound APP_MESSAGE raw: {payload.hex()}")
         cmd, txn, app_uuid, data = appmessage.parse_app_message(payload)
 
         if cmd == AppMessageCmd.PUSH:

@@ -88,12 +88,12 @@ class _Characteristic(ServiceInterface):
     # --- methods the watch (via BlueZ) calls ---
     @method()
     def ReadValue(self, options: "a{sv}") -> "ay":
-        logger.debug(f"GATT-server ReadValue on {self._uuid}")
+        logger.trace(f"GATT-server ReadValue on {self._uuid}")
         return bytes(self._value)
 
     @method()
     def WriteValue(self, value: "ay", options: "a{sv}"):
-        logger.debug(f"GATT-server WriteValue on {self._uuid}: {bytes(value).hex()}")
+        logger.trace(f"GATT-server WriteValue on {self._uuid}: {bytes(value).hex()}")
         if self._on_write:
             self._on_write(bytes(value))
 
