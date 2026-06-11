@@ -70,7 +70,7 @@ def main():
 
     async def _main():
         if args.scan:
-            logger.info("scanning...")
+            logger.debug("scanning...")
             for addr, name in await Pebble.scan():
                 logger.debug(f"  {addr}  {name}")
             return
@@ -83,15 +83,15 @@ def main():
 
             @pebble.on_app_message
             def show(app_uuid, data):
-                logger.info(f"<< {app_uuid}: {data}")
+                logger.debug(f"<< {app_uuid}: {data}")
 
             if args.launch:
                 await pebble.launch_app(args.app_uuid)
                 await asyncio.sleep(1.0)  # give the app a moment to open
 
             txn = await pebble.send_app_message(args.app_uuid, data)
-            logger.info(f"sent AppMessage txn={txn} to {args.app_uuid}: {data}")
-            logger.info(f"listening {args.listen:.0f}s for replies (Ctrl-C to stop)")
+            logger.debug(f"sent AppMessage txn={txn} to {args.app_uuid}: {data}")
+            logger.debug(f"listening {args.listen:.0f}s for replies (Ctrl-C to stop)")
             try:
                 await asyncio.sleep(args.listen)
             except KeyboardInterrupt:

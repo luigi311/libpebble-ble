@@ -77,7 +77,7 @@ class PebblePPoGATTClient:
         # answer with RESET_COMPLETE; from then on DATA packets carry Pebble
         # Protocol messages.
         await self._client.start_notify(PPOGATT_WATCH_NOTIFY, self._on_notify)
-        logger.info(f"subscribed to PPoGATT notify {PPOGATT_WATCH_NOTIFY}")
+        logger.debug(f"subscribed to PPoGATT notify {PPOGATT_WATCH_NOTIFY}")
         await self._write_ppogatt(PPoGATTType.RESET_REQUEST, b"")
 
     async def _await_characteristic(self, uuid: str, timeout: float):
@@ -97,7 +97,7 @@ class PebblePPoGATTClient:
                 logger.debug(f"service scan error: {e}")
             attempt += 1
             if attempt == 1:
-                logger.info(
+                logger.debug(
                     "PPoGATT service not present yet; waiting for the "
                     "watch to expose it (the connectivity handshake may "
                     "still be in progress) ..."
@@ -131,7 +131,7 @@ class PebblePPoGATTClient:
         elif ptype == PPoGATTType.RESET_COMPLETE:
             self._session.reset()
             self._tx_space.set()
-            logger.info("PPoGATT reset complete; transport ready")
+            logger.debug("PPoGATT reset complete; transport ready")
         elif ptype == PPoGATTType.ACK:
             self._session.on_ack()
             if self._session.can_send():

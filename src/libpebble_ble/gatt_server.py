@@ -99,7 +99,7 @@ class _Characteristic(ServiceInterface):
 
     @method()
     def StartNotify(self):
-        logger.info(f"GATT-server StartNotify on {self._uuid} (watch subscribed)")
+        logger.debug(f"GATT-server StartNotify on {self._uuid} (watch subscribed)")
         self._notifying = True
         if self._on_subscribe:
             self._on_subscribe()
@@ -256,7 +256,7 @@ class PebbleGattServer:
         adapter_obj = self._bus.get_proxy_object(BLUEZ, f"/org/bluez/{self.adapter}", introspect)
         gatt_mgr = adapter_obj.get_interface(GATT_MANAGER_IFACE)
         await gatt_mgr.call_register_application(APP_PATH, {})
-        logger.info(
+        logger.debug(
             f"GATT server registered: hosting {PPOGATT_SERVER_SERVICE} (+BADBAD) on {self.adapter}",
         )
 
@@ -276,7 +276,7 @@ class PebbleGattServer:
             return False
 
     def _on_watch_subscribed(self):
-        logger.info("watch subscribed to PPoGATT server characteristic")
+        logger.debug("watch subscribed to PPoGATT server characteristic")
         if not self._connected_evt.is_set():
             self._connected_evt.set()
 

@@ -140,11 +140,11 @@ class Pebble:
 
         # 2. Resolve and connect to the watch as a central (for the fed9
         #    connectivity/pairing-trigger handshake).
-        logger.info(f"locating {self.address} ...")
+        logger.debug(f"locating {self.address} ...")
         known = await self._find_known_device()
         if known is not None:
             device, connected = known
-            logger.info(f"watch already known to BlueZ (connected={connected})")
+            logger.debug(f"watch already known to BlueZ (connected={connected})")
         else:
             device = await BleakScanner.find_device_by_address(self.address, timeout=timeout)
             if device is None:
@@ -164,18 +164,18 @@ class Pebble:
             if "already connected" not in str(e).lower():
                 await self._server.stop()
                 raise
-            logger.info("device was already connected; attaching")
-        logger.info(f"connected to {self.address}")
+            logger.debug("device was already connected; attaching")
+        logger.success(f"connected to {self.address}")
 
         already_bonded = bool(known and known[0].details.get("props", {}).get("Bonded"))
         if pairing and not already_bonded:
             try:
                 paired = await self._client.pair()
-                logger.info(f"bonding result: {paired}")
+                logger.debug(f"bonding result: {paired}")
             except Exception as e:
                 logger.warning(f"explicit pair() failed (may already be bonded): {e}")
         elif already_bonded:
-            logger.info("already bonded; skipping pair()")
+            logger.debug("already bonded; skipping pair()")
 
         # 3. fed9 handshake. Subscribe to connectivity, MTU and connection-
         #    params updates, then write the pairing trigger. With our GATT
@@ -189,7 +189,7 @@ class Pebble:
             try:
                 await self._client.start_notify(char_uuid, cb)
                 self._subscribed.append(char_uuid)
-                logger.info(f"subscribed to {label}")
+                logger.success(f"subscribed to {label}")
             except Exception as e:
                 logger.warning(f"{label} subscribe failed: {e}")
 
@@ -209,14 +209,14 @@ class Pebble:
                 bytes([0x09]),
                 response=True,
             )
-            logger.info("wrote 0x09 to pairing trigger (server mode)")
+            logger.debug("wrote 0x09 to pairing trigger (server mode)")
         except Exception as e:
             logger.warning(f"pairing trigger write failed: {e}")
 
         # 4. Wait for the watch to connect back to our GATT server and subscribe
         #    to the write characteristic. That subscription is the signal the
         #    PPoGATT data channel is live.
-        logger.info("waiting for watch to connect back to our GATT server ...")
+        logger.debug("waiting for watch to connect back to our GATT server ...")
         ok = await self._server.wait_connected(timeout=timeout)
         if not ok:
             logger.warning(
@@ -225,14 +225,14 @@ class Pebble:
                 "reach the watch.",
             )
         else:
-            logger.info("PPoGATT data channel established")
+            logger.debug("PPoGATT data channel established")
 
         mtu = getattr(self._client, "mtu_size", 0) or 23
         if mtu >= 23 and self._server.mtu == 23:
             # Only fall back to the link MTU if the watch never told us its
             # preferred MTU via the MTU characteristic.
             self._server.set_mtu(mtu)
-        logger.info(f"ATT MTU = {self._server.mtu}")
+        logger.debug(f"ATT MTU = {self._server.mtu}")
 
         self._connected.set()
 
@@ -253,7 +253,7 @@ class Pebble:
 
     # ---- fed9 characteristic callbacks ----
     def _on_connectivity(self, _char, data: bytearray):
-        logger.info(f"connectivity update from watch: {bytes(data).hex()}")
+        logger.debug(f"connectivity update from watch: {bytes(data).hex()}")
 
     def _on_conn_params(self, _char, data: bytearray):
         logger.debug(f"connection-params update: {bytes(data).hex()}")
@@ -262,7 +262,7 @@ class Pebble:
         # The watch reports its preferred MTU here as a little-endian u16.
         if len(data) >= 2:
             watch_mtu = int.from_bytes(bytes(data[:2]), "little")
-            logger.info(f"watch requested MTU: {watch_mtu}")
+            logger.debug(f"watch requested MTU: {watch_mtu}")
             if self._server and watch_mtu >= 23:
                 self._server.set_mtu(watch_mtu)
 
@@ -283,7 +283,7 @@ class Pebble:
     def _on_phone_version(self, payload: bytes):
         # The watch is asking who we are. If we don't answer it will conclude
         # the phone app is absent and drop the session after a timeout.
-        logger.info("watch requested phone version; replying")
+        logger.debug("watch requested phone version; replying")
         self._send_pebble(Endpoint.PHONE_VERSION, protocol.build_phone_version_response())
 
     def _on_ping(self, payload: bytes):
