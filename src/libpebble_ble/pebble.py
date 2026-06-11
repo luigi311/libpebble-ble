@@ -1,4 +1,4 @@
-"""High-level Pebble connection: lifecycle, endpoint dispatch, AppMessage API.
+"""High-level Pebble connection: lifecycle, pairing, endpoint dispatch, AppMessage API.
 
 This is the class users interact with. It owns:
   * the bleak GATT *client* connection used for the fed9 pairing/connectivity
@@ -8,22 +8,32 @@ This is the class users interact with. It owns:
 and routes inbound Pebble Protocol messages by endpoint — answering the
 watch's PHONE_VERSION and PING keepalives itself and fanning AppMessages out
 to registered handlers.
+
+Pairing: connect() handles first-time bonding itself. It registers a
+temporary auto-accept BlueZ agent (agent.PairingAgent), pokes the watch's
+pairing-trigger characteristic so the WATCH initiates bonding (the
+Gadgetbridge flow — the human confirms on the watch screen), falls back to
+host-initiated Pair() if the watch stays quiet, and on AuthenticationFailed
+removes the (stale) BlueZ bond and retries once from scratch. After bonding
+the device is marked Trusted so BlueZ lets the watch reconnect to our GATT
+server unprompted.
 """
 
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
+from dbus_fast import Variant
 from dbus_fast.aio import MessageBus
 from dbus_fast.constants import BusType
 from loguru import logger
 
 from . import appmessage, protocol
+from .agent import PairingAgent
 from .appmessage import AppMessageCmd, AppMessageValue
 from .exceptions import PebbleNackError
 from .gatt_server import BLUEZ, DBUS_OM_IFACE, PebbleGattServer
@@ -34,6 +44,10 @@ from .uuids import (
     MTU_CHARACTERISTIC,
     PAIRING_TRIGGER_CHARACTERISTIC,
 )
+
+PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
+DEVICE_IFACE = "org.bluez.Device1"
+ADAPTER_IFACE = "org.bluez.Adapter1"
 
 # Handler signatures:
 #   AppMessageHandler(app_uuid: str, data: dict)   - inbound PUSH from a watchapp
@@ -81,6 +95,75 @@ class Pebble:
     async def __aexit__(self, exc_type, exc, tb):
         await self.disconnect()
 
+    # ---- BlueZ device helpers ----
+    def _device_path(self) -> str:
+        return f"/org/bluez/{self.adapter}/dev_" + self.address.upper().replace(":", "_")
+
+    async def _read_device_props(self) -> dict:
+        """Read org.bluez.Device1 properties for our watch ({} on failure)."""
+        bus = None
+        try:
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            path = self._device_path()
+            introspect = await bus.introspect(BLUEZ, path)
+            obj = bus.get_proxy_object(BLUEZ, path, introspect)
+            props = obj.get_interface(PROPERTIES_IFACE)
+            raw = await props.call_get_all(DEVICE_IFACE)
+            return {k: v.value for k, v in raw.items()}
+        except Exception as e:
+            logger.trace(f"device props read failed: {e!r}")
+            return {}
+        finally:
+            if bus:
+                bus.disconnect()
+
+    async def _wait_paired(self, timeout: float) -> bool:
+        """Poll BlueZ until the device reports Paired/Bonded, or timeout."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            props = await self._read_device_props()
+            if props.get("Paired") or props.get("Bonded"):
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _set_trusted(self) -> None:
+        """Mark the device Trusted so BlueZ lets the bonded watch reconnect
+        to our GATT server without an authorization prompt."""
+        bus = None
+        try:
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            path = self._device_path()
+            introspect = await bus.introspect(BLUEZ, path)
+            obj = bus.get_proxy_object(BLUEZ, path, introspect)
+            props = obj.get_interface(PROPERTIES_IFACE)
+            await props.call_set(DEVICE_IFACE, "Trusted", Variant("b", True))
+            logger.debug("watch marked Trusted in BlueZ")
+        except Exception as e:
+            logger.debug(f"could not set Trusted: {e!r}")
+        finally:
+            if bus:
+                bus.disconnect()
+
+    async def _forget_device(self) -> None:
+        """Remove the device from BlueZ entirely (clears any stale host-side
+        bond/keys). The watch's own bond, if stale, must be forgotten on the
+        watch (Settings -> Bluetooth)."""
+        bus = None
+        try:
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            adapter_path = f"/org/bluez/{self.adapter}"
+            introspect = await bus.introspect(BLUEZ, adapter_path)
+            obj = bus.get_proxy_object(BLUEZ, adapter_path, introspect)
+            adapter = obj.get_interface(ADAPTER_IFACE)
+            await adapter.call_remove_device(self._device_path())
+            logger.info(f"removed {self.address} from BlueZ (stale bond cleared)")
+        except Exception as e:
+            logger.debug(f"RemoveDevice failed (may not exist): {e!r}")
+        finally:
+            if bus:
+                bus.disconnect()
+
     # ---- connection lifecycle ----
     async def _find_known_device(self):
         """If BlueZ already has this device cached, return a BLEDevice that
@@ -100,7 +183,7 @@ class Pebble:
             objects = await om.call_get_managed_objects()
             target = self.address.upper()
             for path, ifaces in objects.items():
-                dev = ifaces.get("org.bluez.Device1")
+                dev = ifaces.get(DEVICE_IFACE)
                 if not dev:
                     continue
                 addr = dev.get("Address")
@@ -126,6 +209,74 @@ class Pebble:
             if bus:
                 bus.disconnect()
 
+    async def _resolve_device(self, timeout: float) -> tuple[BLEDevice, dict]:
+        """Find the watch via the BlueZ cache or a scan. Returns (device, props)."""
+        known = await self._find_known_device()
+        if known is not None:
+            device, connected = known
+            logger.debug(f"watch already known to BlueZ (connected={connected})")
+            return device, device.details.get("props", {})
+        device = await BleakScanner.find_device_by_address(self.address, timeout=timeout)
+        if device is None:
+            msg = (
+                f"{self.address} not found in {timeout}s. Make sure the "
+                f"watch is advertising (not already connected elsewhere) "
+                f"and not half-bonded in the OS — if you ever paired it via "
+                f"system Bluetooth settings, 'forget' it on both ends first."
+            )
+            raise RuntimeError(msg)
+        return device, {}
+
+    async def _teardown_client(self) -> None:
+        client, self._client = self._client, None
+        self._subscribed.clear()
+        if client is not None:
+            try:
+                if client.is_connected:
+                    await client.disconnect()
+            except Exception as e:
+                logger.debug(f"client teardown error: {e!r}")
+
+    async def _do_pairing(self, watch_initiated_wait: float = 10.0) -> bool:
+        """Bond with the watch. Returns True once BlueZ reports Paired.
+
+        Gadgetbridge's working order, mirrored here:
+          1. Poke the pairing-trigger characteristic (a read first — the
+             >=4.0-FW path — then the 0x09 write, which both requests pairing
+             and announces the phone-hosted GATT server). The WATCH then shows
+             its confirm screen and initiates bonding; our default agent
+             accepts the host side.
+          2. Only if the watch stays quiet, initiate Pair() from the host.
+        """
+        try:
+            await self._client.read_gatt_char(PAIRING_TRIGGER_CHARACTERISTIC)
+        except Exception as e:
+            logger.debug(f"pairing trigger read failed (fine on some FW): {e!r}")
+        try:
+            await self._client.write_gatt_char(
+                PAIRING_TRIGGER_CHARACTERISTIC, bytes([0x09]), response=True
+            )
+            logger.debug("wrote 0x09 to pairing trigger (pair + server mode)")
+        except Exception as e:
+            logger.debug(f"pairing trigger write failed: {e!r}")
+
+        logger.info("waiting for the watch to initiate bonding ...")
+        if await self._wait_paired(watch_initiated_wait):
+            logger.debug("bonded (watch-initiated)")
+            return True
+
+        # Watch didn't start security; initiate from our side instead.
+        logger.debug("watch did not initiate bonding; calling Pair() from the host")
+        try:
+            paired = await self._client.pair()
+            if paired:
+                logger.debug("bonded (host-initiated)")
+                return True
+        except Exception as e:
+            logger.warning(f"host-initiated Pair() failed: {e!r}")
+        # A failed/raced Pair() can still land the bond a beat later.
+        return await self._wait_paired(3.0)
+
     async def connect(self, pairing: bool = True, timeout: float = 30.0):
         self._loop = asyncio.get_running_loop()
 
@@ -138,103 +289,147 @@ class Pebble:
         )
         await self._server.start()
 
-        # 2. Resolve and connect to the watch as a central (for the fed9
-        #    connectivity/pairing-trigger handshake).
-        logger.debug(f"locating {self.address} ...")
-        known = await self._find_known_device()
-        if known is not None:
-            device, connected = known
-            logger.debug(f"watch already known to BlueZ (connected={connected})")
-        else:
-            device = await BleakScanner.find_device_by_address(self.address, timeout=timeout)
-            if device is None:
-                await self._server.stop()
+        agent: PairingAgent | None = None
+        try:
+            # 2. Resolve + connect + (if needed) bond. Two attempts: a failed
+            #    first pairing (typically AuthenticationFailed from a stale
+            #    host-side bond) clears the BlueZ device and retries fresh.
+            for attempt in (1, 2):
+                device, known_props = await self._resolve_device(timeout)
+                self._client = BleakClient(device, timeout=timeout)
+                try:
+                    await self._client.connect()
+                except Exception as e:
+                    if "already connected" not in str(e).lower():
+                        raise
+                    logger.debug("device was already connected; attaching")
+                logger.success(f"connected to {self.address}")
+
+                already_bonded = bool(known_props.get("Paired") or known_props.get("Bonded"))
+
+                # Subscribe to connectivity BEFORE pairing: it works unbonded
+                # and carries the watch's pairing-status updates.
+                self._subscribed.clear()
+                try:
+                    await self._client.start_notify(
+                        CONNECTIVITY_CHARACTERISTIC, self._on_connectivity
+                    )
+                    self._subscribed.append(CONNECTIVITY_CHARACTERISTIC)
+                    logger.debug("subscribed to connectivity")
+                except Exception as e:
+                    logger.warning(f"connectivity subscribe failed: {e}")
+
+                if not pairing or already_bonded:
+                    if already_bonded:
+                        logger.debug("already bonded; skipping pairing")
+                    break
+
+                # First-time bonding. Register a temporary default agent that
+                # auto-accepts OUR watch's requests (headless hosts have no
+                # agent, which is exactly what makes Pair() die with
+                # AuthenticationFailed).
+                if agent is None:
+                    agent = PairingAgent(self.address)
+                    try:
+                        await agent.register()
+                    except Exception as e:
+                        agent = None
+                        logger.warning(
+                            f"could not register pairing agent: {e!r}; "
+                            f"relying on a system agent being present"
+                        )
+                logger.info(
+                    "watch is not bonded — pairing now. "
+                    "CONFIRM THE PAIRING ON THE WATCH when it prompts."
+                )
+                if await self._do_pairing():
+                    logger.success("bonded with watch")
+                    await self._set_trusted()
+                    break
+
+                if attempt == 1:
+                    logger.warning(
+                        "pairing failed — clearing the (possibly stale) BlueZ "
+                        "bond and retrying once from scratch"
+                    )
+                    await self._teardown_client()
+                    await self._forget_device()
+                    await asyncio.sleep(2.0)  # let the watch resume advertising
+                    continue
+
                 msg = (
-                    f"{self.address} not found in {timeout}s. Make sure the "
-                    f"watch is advertising (not already connected elsewhere) "
-                    f"and not half-bonded in the OS — if you ever paired it via "
-                    f"system Bluetooth settings, 'forget' it on both ends first."
+                    f"pairing with {self.address} failed twice. If the watch "
+                    f"lists this computer under Settings -> Bluetooth, FORGET "
+                    f"it there (its own bond is stale), then try again."
                 )
                 raise RuntimeError(msg)
 
-        self._client = BleakClient(device, timeout=timeout)
-        try:
-            await self._client.connect()
-        except Exception as e:
-            if "already connected" not in str(e).lower():
+            # 3. Remaining fed9 handshake: MTU + connection-params (these can
+            #    require an encrypted/bonded link, hence after pairing).
+            for char_uuid, cb, label in (
+                (MTU_CHARACTERISTIC, self._on_mtu, "MTU"),
+                (CONNECTION_PARAMS_CHARACTERISTIC, self._on_conn_params, "connection-params"),
+            ):
+                try:
+                    await self._client.start_notify(char_uuid, cb)
+                    self._subscribed.append(char_uuid)
+                    logger.debug(f"subscribed to {label}")
+                except Exception as e:
+                    logger.warning(f"{label} subscribe failed: {e}")
+
+            # The watch publishes its preferred MTU on the MTU characteristic;
+            # read the current value too in case the notification already fired.
+            try:
+                mtu_val = await self._client.read_gatt_char(MTU_CHARACTERISTIC)
+                self._on_mtu(None, bytearray(mtu_val))
+            except Exception as e:
+                logger.debug(f"MTU characteristic read failed: {e}")
+
+            # Pairing trigger (connect-back nudge). In the server
+            # (non-clientOnly) path Gadgetbridge writes 0x09; clientOnly writes
+            # 0x11. Idempotent if _do_pairing already wrote it.
+            try:
+                await self._client.write_gatt_char(
+                    PAIRING_TRIGGER_CHARACTERISTIC,
+                    bytes([0x09]),
+                    response=True,
+                )
+                logger.debug("wrote 0x09 to pairing trigger (server mode)")
+            except Exception as e:
+                logger.warning(f"pairing trigger write failed: {e}")
+
+            # 4. Wait for the watch to connect back to our GATT server and
+            #    subscribe to the write characteristic. That subscription is
+            #    the signal the PPoGATT data channel is live.
+            logger.debug("waiting for watch to connect back to our GATT server ...")
+            ok = await self._server.wait_connected(timeout=timeout)
+            if not ok:
+                logger.warning(
+                    f"watch did not connect back to our GATT server within {timeout}. "
+                    "The PPoGATT data channel is not established; sends may not "
+                    "reach the watch.",
+                )
+            else:
+                logger.debug("PPoGATT data channel established")
+
+            mtu = getattr(self._client, "mtu_size", 0) or 23
+            if mtu >= 23 and self._server.mtu == 23:
+                # Only fall back to the link MTU if the watch never told us its
+                # preferred MTU via the MTU characteristic.
+                self._server.set_mtu(mtu)
+            logger.debug(f"ATT MTU = {self._server.mtu}")
+
+            self._connected.set()
+        except BaseException:
+            # Don't leak the GATT server registration or a half-open client.
+            await self._teardown_client()
+            if self._server:
                 await self._server.stop()
-                raise
-            logger.debug("device was already connected; attaching")
-        logger.success(f"connected to {self.address}")
-
-        already_bonded = bool(known and known[0].details.get("props", {}).get("Bonded"))
-        if pairing and not already_bonded:
-            try:
-                paired = await self._client.pair()
-                logger.debug(f"bonding result: {paired}")
-            except Exception as e:
-                logger.warning(f"explicit pair() failed (may already be bonded): {e}")
-        elif already_bonded:
-            logger.debug("already bonded; skipping pair()")
-
-        # 3. fed9 handshake. Subscribe to connectivity, MTU and connection-
-        #    params updates, then write the pairing trigger. With our GATT
-        #    server already advertised, the trigger write is what prompts the
-        #    watch to connect back to our 10000000 service.
-        for char_uuid, cb, label in (
-            (CONNECTIVITY_CHARACTERISTIC, self._on_connectivity, "connectivity"),
-            (MTU_CHARACTERISTIC, self._on_mtu, "MTU"),
-            (CONNECTION_PARAMS_CHARACTERISTIC, self._on_conn_params, "connection-params"),
-        ):
-            try:
-                await self._client.start_notify(char_uuid, cb)
-                self._subscribed.append(char_uuid)
-                logger.success(f"subscribed to {label}")
-            except Exception as e:
-                logger.warning(f"{label} subscribe failed: {e}")
-
-        # The watch publishes its preferred MTU on the MTU characteristic; read
-        # the current value too in case the notification already fired.
-        try:
-            mtu_val = await self._client.read_gatt_char(MTU_CHARACTERISTIC)
-            self._on_mtu(None, bytearray(mtu_val))
-        except Exception as e:
-            logger.debug(f"MTU characteristic read failed: {e}")
-
-        # Pairing trigger. In the server (non-clientOnly) path Gadgetbridge
-        # writes 0x09; clientOnly writes 0x11. We use the server path here.
-        try:
-            await self._client.write_gatt_char(
-                PAIRING_TRIGGER_CHARACTERISTIC,
-                bytes([0x09]),
-                response=True,
-            )
-            logger.debug("wrote 0x09 to pairing trigger (server mode)")
-        except Exception as e:
-            logger.warning(f"pairing trigger write failed: {e}")
-
-        # 4. Wait for the watch to connect back to our GATT server and subscribe
-        #    to the write characteristic. That subscription is the signal the
-        #    PPoGATT data channel is live.
-        logger.debug("waiting for watch to connect back to our GATT server ...")
-        ok = await self._server.wait_connected(timeout=timeout)
-        if not ok:
-            logger.warning(
-                f"watch did not connect back to our GATT server within {timeout}. "
-                "The PPoGATT data channel is not established; sends may not "
-                "reach the watch.",
-            )
-        else:
-            logger.debug("PPoGATT data channel established")
-
-        mtu = getattr(self._client, "mtu_size", 0) or 23
-        if mtu >= 23 and self._server.mtu == 23:
-            # Only fall back to the link MTU if the watch never told us its
-            # preferred MTU via the MTU characteristic.
-            self._server.set_mtu(mtu)
-        logger.debug(f"ATT MTU = {self._server.mtu}")
-
-        self._connected.set()
+                self._server = None
+            raise
+        finally:
+            if agent is not None:
+                await agent.unregister()
 
     async def disconnect(self):
         self._connected.clear()
@@ -251,9 +446,25 @@ class Pebble:
         if self._client and self._client.is_connected:
             await self._client.disconnect()
 
+    async def forget(self) -> None:
+        """Remove this watch from BlueZ (clears the host-side bond).
+
+        Use when bonding state is wedged. Remember the watch keeps its own
+        bond table: if pairing still fails afterwards, forget this host on
+        the watch too (Settings -> Bluetooth)."""
+        await self._forget_device()
+
     # ---- fed9 characteristic callbacks ----
     def _on_connectivity(self, _char, data: bytearray):
-        logger.debug(f"connectivity update from watch: {bytes(data).hex()}")
+        raw = bytes(data)
+        if raw:
+            flags = raw[0]
+            # Best-effort decode of the status bits Gadgetbridge reports.
+            logger.debug(
+                f"connectivity update: {raw.hex()} "
+                f"(connected={bool(flags & 1)}, paired={bool(flags & 2)}, "
+                f"encrypted={bool(flags & 4)})"
+            )
 
     def _on_conn_params(self, _char, data: bytearray):
         logger.debug(f"connection-params update: {bytes(data).hex()}")
