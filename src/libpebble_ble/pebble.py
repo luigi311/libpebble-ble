@@ -62,6 +62,16 @@ NackHandler = Callable[[int], None]
 class Pebble:
     address: str
     adapter: str = "hci0"
+    # Force the link onto Bluetooth LE only. The Pebble is dual-mode; when no
+    # LE bond exists yet, BlueZ's bearer-selection falls through to "last seen
+    # bearer, BR/EDR wins ties" and tries CLASSIC — which fails on LE-only
+    # setups and is the cause of the `btmgmt bredr off` workaround. With
+    # le_only=True we create/connect the device via Adapter1.ConnectDevice
+    # pinned to AddressType, so BR/EDR is never attempted.
+    le_only: bool = True
+    # Pebbles advertise an LE random (static) address. Override only if your
+    # specific watch enumerates as "public".
+    address_type: str = "random"
     _client: BleakClient | None = field(default=None, init=False)
     _server: PebbleGattServer | None = field(default=None, init=False)
     _txn: int = field(default=0, init=False)
@@ -74,6 +84,8 @@ class Pebble:
     _connected: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     # characteristics we successfully subscribed to (for clean teardown)
     _subscribed: list = field(default_factory=list, init=False)
+    # shared system-bus connection for all BlueZ helper calls (see _get_bus)
+    _bus: "MessageBus | None" = field(default=None, init=False)
 
     # ---- discovery ----
     @staticmethod
@@ -95,27 +107,53 @@ class Pebble:
     async def __aexit__(self, exc_type, exc, tb):
         await self.disconnect()
 
+    # ---- shared D-Bus connection ----
+    # One system-bus connection is reused for every BlueZ helper call below.
+    # Opening a fresh connection per call works on desktops but exhausts the
+    # stricter per-user D-Bus limits on mobile stacks (Halium/Ubuntu Touch),
+    # which surfaces as 'add match request failed', ConnectionRefusedError on
+    # the bus socket, and blind connect timeouts in bleak.
+    async def _get_bus(self) -> MessageBus:
+        if self._bus is None:
+            self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        return self._bus
+
+    def _drop_bus(self) -> None:
+        bus, self._bus = self._bus, None
+        if bus is not None:
+            try:
+                bus.disconnect()
+            except Exception:
+                pass
+
+    def _maybe_drop_bus(self, exc: Exception) -> None:
+        """Throw away the shared bus only on connection-level failures, so a
+        mere 'object/interface not found' doesn't cost us the connection.
+        """
+        if isinstance(exc, (EOFError, ConnectionError, BrokenPipeError, OSError)):
+            logger.debug(f"shared D-Bus connection lost ({exc!r}); will reconnect")
+            self._drop_bus()
+
+    async def _bluez_interface(self, path: str, iface: str):
+        bus = await self._get_bus()
+        introspect = await bus.introspect(BLUEZ, path)
+        obj = bus.get_proxy_object(BLUEZ, path, introspect)
+        return obj.get_interface(iface)
+
     # ---- BlueZ device helpers ----
     def _device_path(self) -> str:
         return f"/org/bluez/{self.adapter}/dev_" + self.address.upper().replace(":", "_")
 
     async def _read_device_props(self) -> dict:
         """Read org.bluez.Device1 properties for our watch ({} on failure)."""
-        bus = None
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            path = self._device_path()
-            introspect = await bus.introspect(BLUEZ, path)
-            obj = bus.get_proxy_object(BLUEZ, path, introspect)
-            props = obj.get_interface(PROPERTIES_IFACE)
+            props = await self._bluez_interface(self._device_path(), PROPERTIES_IFACE)
             raw = await props.call_get_all(DEVICE_IFACE)
             return {k: v.value for k, v in raw.items()}
         except Exception as e:
+            self._maybe_drop_bus(e)
             logger.trace(f"device props read failed: {e!r}")
             return {}
-        finally:
-            if bus:
-                bus.disconnect()
 
     async def _wait_paired(self, timeout: float) -> bool:
         """Poll BlueZ until the device reports Paired/Bonded, or timeout."""
@@ -129,40 +167,28 @@ class Pebble:
 
     async def _set_trusted(self) -> None:
         """Mark the device Trusted so BlueZ lets the bonded watch reconnect
-        to our GATT server without an authorization prompt."""
-        bus = None
+        to our GATT server without an authorization prompt.
+        """
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            path = self._device_path()
-            introspect = await bus.introspect(BLUEZ, path)
-            obj = bus.get_proxy_object(BLUEZ, path, introspect)
-            props = obj.get_interface(PROPERTIES_IFACE)
+            props = await self._bluez_interface(self._device_path(), PROPERTIES_IFACE)
             await props.call_set(DEVICE_IFACE, "Trusted", Variant("b", True))
             logger.debug("watch marked Trusted in BlueZ")
         except Exception as e:
+            self._maybe_drop_bus(e)
             logger.debug(f"could not set Trusted: {e!r}")
-        finally:
-            if bus:
-                bus.disconnect()
 
     async def _forget_device(self) -> None:
         """Remove the device from BlueZ entirely (clears any stale host-side
         bond/keys). The watch's own bond, if stale, must be forgotten on the
-        watch (Settings -> Bluetooth)."""
-        bus = None
+        watch (Settings -> Bluetooth).
+        """
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            adapter_path = f"/org/bluez/{self.adapter}"
-            introspect = await bus.introspect(BLUEZ, adapter_path)
-            obj = bus.get_proxy_object(BLUEZ, adapter_path, introspect)
-            adapter = obj.get_interface(ADAPTER_IFACE)
+            adapter = await self._bluez_interface(f"/org/bluez/{self.adapter}", ADAPTER_IFACE)
             await adapter.call_remove_device(self._device_path())
             logger.info(f"removed {self.address} from BlueZ (stale bond cleared)")
         except Exception as e:
+            self._maybe_drop_bus(e)
             logger.debug(f"RemoveDevice failed (may not exist): {e!r}")
-        finally:
-            if bus:
-                bus.disconnect()
 
     # ---- connection lifecycle ----
     async def _find_known_device(self):
@@ -174,12 +200,8 @@ class Pebble:
         BleakDeviceNotFoundError even though the device is right there in BlueZ.
         Returns (BLEDevice, connected: bool) or None.
         """
-        bus = None
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            introspect = await bus.introspect(BLUEZ, "/")
-            obj = bus.get_proxy_object(BLUEZ, "/", introspect)
-            om = obj.get_interface(DBUS_OM_IFACE)
+            om = await self._bluez_interface("/", DBUS_OM_IFACE)
             objects = await om.call_get_managed_objects()
             target = self.address.upper()
             for path, ifaces in objects.items():
@@ -203,11 +225,9 @@ class Pebble:
                 return ble_device, connected
             return None
         except Exception as e:
+            self._maybe_drop_bus(e)
             logger.debug(f"could not query known devices: {e}")
             return None
-        finally:
-            if bus:
-                bus.disconnect()
 
     async def _resolve_device(self, timeout: float) -> tuple[BLEDevice, dict]:
         """Find the watch via the BlueZ cache or a scan. Returns (device, props)."""
@@ -243,22 +263,57 @@ class Pebble:
         When a connect attempt dies mid service-discovery, bleak's client
         never reaches is_connected=True, but BlueZ can still be holding the
         ACL link (or believe it is). A raw Device1.Disconnect resets that
-        state so the next attempt starts clean.
+        state so the next attempt starts clean. (If the device object is
+        gone from BlueZ — common after a scan-found device fails — there is
+        nothing to reset and the InterfaceNotFound error here is harmless.)
         """
-        bus = None
         try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            path = self._device_path()
-            introspect = await bus.introspect(BLUEZ, path)
-            obj = bus.get_proxy_object(BLUEZ, path, introspect)
-            dev = obj.get_interface(DEVICE_IFACE)
+            dev = await self._bluez_interface(self._device_path(), DEVICE_IFACE)
             await dev.call_disconnect()
             logger.debug("forced BlueZ Device1.Disconnect")
         except Exception as e:
+            self._maybe_drop_bus(e)
             logger.trace(f"Device1.Disconnect failed (probably already down): {e!r}")
-        finally:
-            if bus:
-                bus.disconnect()
+
+    async def _le_connect_device(self, timeout: float) -> None:
+        """Create+connect the watch over LE only, via Adapter1.ConnectDevice.
+
+        ConnectDevice takes an explicit AddressType, so BlueZ builds the
+        device object as an LE peer and connects the LE bearer — it never
+        considers BR/EDR. This is the in-library equivalent of
+        `btmgmt bredr off`, without root or a controller-wide change.
+
+        ConnectDevice blocks until the physical LE link is up (and kicks off
+        service discovery), so afterwards the device object exists and we hand
+        it to bleak by its known D-Bus path (no scan, no re-Connect).
+        Requires BlueZ with ConnectDevice (5.49+, marked experimental on some
+        builds). If it's unavailable, the caller falls back to the scan path.
+        """
+        adapter = await self._bluez_interface(f"/org/bluez/{self.adapter}", ADAPTER_IFACE)
+        props = {
+            "Address": Variant("s", self.address.upper()),
+            "AddressType": Variant("s", self.address_type),
+        }
+        logger.debug(f"Adapter1.ConnectDevice {self.address} as LE/{self.address_type} ...")
+        # May raise org.bluez.Error.AlreadyExists if the device object is
+        # present from a prior session — that's fine, we connect by path below.
+        try:
+            await asyncio.wait_for(adapter.call_connect_device(props), timeout)
+        except Exception as e:
+            if "AlreadyExists" not in str(e):
+                raise
+            logger.debug("device already exists in BlueZ; connecting by path")
+
+        # Hand the now-existing LE device to bleak by its D-Bus path so bleak
+        # does no discovery of its own (and can't re-resolve it as BR/EDR).
+        device = BLEDevice(
+            address=self.address,
+            name=self.address,
+            details={"path": self._device_path(), "props": {}},
+        )
+        self._client = BleakClient(device, timeout=timeout)
+        if not self._client.is_connected:
+            await self._client.connect()
 
     async def _connect_client(self, timeout: float, attempts: int, retry_delay: float) -> dict:
         """Resolve the watch and establish the GATT client link, retrying
@@ -269,10 +324,43 @@ class Pebble:
         down a previous link or mid auto-reconnect; Gadgetbridge retries, and
         so do we — with a BlueZ-level link reset and a growing pause between
         attempts so the watch has time to settle.
+
+        When le_only is set we connect via Adapter1.ConnectDevice pinned to
+        the LE address type so BR/EDR is never tried; if that BlueZ build
+        lacks ConnectDevice we fall back to the scan-based path for the rest
+        of this call.
         """
         last_error: Exception | None = None
+        use_le = self.le_only
         for i in range(1, attempts + 1):
             try:
+                if use_le:
+                    try:
+                        await self._le_connect_device(timeout)
+                        return await self._read_device_props()
+                    except Exception as e:
+                        # ConnectDevice missing/disabled on this BlueZ: don't
+                        # keep retrying a method that will never exist — drop
+                        # to the scan path for the remaining attempts.
+                        if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
+                            raise  # a real LE connect timeout: retry as LE
+                        msg = str(e)
+                        if (
+                            "ConnectDevice" in msg
+                            or "NotSupported" in msg
+                            or "UnknownMethod" in msg
+                            or "experimental" in msg.lower()
+                        ):
+                            logger.warning(
+                                f"Adapter1.ConnectDevice unavailable ({e!r}); "
+                                f"falling back to scan-based connect. To keep "
+                                f"LE-only, enable BlueZ experimental features "
+                                f"(bluetoothd --experimental) or set le_only=False."
+                            )
+                            use_le = False
+                            # fall through to scan path this same attempt
+                        else:
+                            raise
                 device, props = await self._resolve_device(timeout)
                 self._client = BleakClient(device, timeout=timeout)
                 try:
@@ -483,11 +571,13 @@ class Pebble:
 
             self._connected.set()
         except BaseException:
-            # Don't leak the GATT server registration or a half-open client.
+            # Don't leak the GATT server registration, a half-open client,
+            # or the shared bus connection.
             await self._teardown_client()
             if self._server:
                 await self._server.stop()
                 self._server = None
+            self._drop_bus()
             raise
         finally:
             if agent is not None:
@@ -507,13 +597,15 @@ class Pebble:
             self._server = None
         if self._client and self._client.is_connected:
             await self._client.disconnect()
+        self._drop_bus()
 
     async def forget(self) -> None:
         """Remove this watch from BlueZ (clears the host-side bond).
 
         Use when bonding state is wedged. Remember the watch keeps its own
         bond table: if pairing still fails afterwards, forget this host on
-        the watch too (Settings -> Bluetooth)."""
+        the watch too (Settings -> Bluetooth).
+        """
         await self._forget_device()
 
     # ---- fed9 characteristic callbacks ----
