@@ -1,51 +1,40 @@
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "libpebble-ble"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "bleak>=3.0.2",
-    "dbus-fast>=5.0.22",
-    "loguru>=0.7.3",
-]
+name = "pebble-le-workspace"
+version = "0.0.0"
+description = "Workspace root for the pebble-le packages (library, proto contract, daemon, client)."
+requires-python = ">=3.11"
+# This is a virtual workspace root — it ships nothing itself, it just ties the
+# member packages together so they resolve against each other locally.
 
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+libpebble-ble = { workspace = true }
+pebble-le-proto = { workspace = true }
+
+# Dev tooling shared across the workspace.
 [dependency-groups]
 dev = [
-    "ruff>=0.15.6",
-    "ty>=0.0.23",
+    "ruff>=0.6",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["packages"]
 
 [tool.ruff]
 line-length = 100
-indent-width = 4
-format.indent-style = "space"
-target-version = "py313"
-src = ["tests","hooks"]
+target-version = "py311"
 
 [tool.ruff.lint]
-pydocstyle.convention = "google"
-fixable = ["ALL"]
-select = ["ALL"]
-ignore = [
-    "FA102", # Flake8-future-annotations
-    "F401", # Disable fix for unused imports
-    "B904", # Allow raising exceptions without from e
-    "PLR0913", # too many arguments
-    "CPY", # Flake8-copyright
-    "T201", # Debugging print statements
-    "ERA", # Eradicate – detects commented-out code
-    "BLE001", # Catch-all exceptions
-    "D100", # missing docstring in public module
-    "D105", # undocumented magic method
-    "D107", # undocumented public init
-    "D203", # incorrect-blank-line-before-class
-    "D205", # line-between-summary-and-description
-    "D212", # multi-line-summary-first-line
-    "D407", # missing-dashed-underline-after-section
-    "S311", # rand-usage
-]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# dbus-fast reads method/signal/property type annotations as D-Bus signature
+# STRINGS (e.g. "b", "u", "a{i(sv)}"). They are not Python type hints, so the
+# annotation-related lints must not touch them.
+"**/service.py" = ["UP037", "F821", "F722", "N802", "E501"]
+"**/client.py" = ["UP037", "F821", "F722"]

@@ -1,0 +1,20 @@
+[project]
+name = "pebble-le-client"
+version = "0.1.0"
+description = "Pythonic client for the pebble-led daemon — talk to your Pebble without touching D-Bus."
+requires-python = ">=3.11"
+dependencies = [
+    "pebble-le-proto",
+    "dbus-fast>=2.21",
+]
+# Note: does NOT depend on libpebble-ble at runtime for BLE — only transitively,
+# via pebble-le-proto, for the AppMessage value TYPES (u8/u16/... wrappers) it
+# re-exports so callers can pin widths. An app importing this never opens a BLE
+# link; it only talks to the daemon.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pebble_le_client"]

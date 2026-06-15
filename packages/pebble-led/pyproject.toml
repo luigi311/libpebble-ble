@@ -1,0 +1,21 @@
+[project]
+name = "pebble-led"
+version = "0.1.0"
+description = "Long-lived daemon that owns the Pebble BLE connection and exposes it over D-Bus."
+requires-python = ">=3.11"
+dependencies = [
+    "libpebble-ble",
+    "pebble-le-proto",
+    "dbus-fast>=2.21",
+    "loguru>=0.7",
+]
+
+[project.scripts]
+pebble-led = "pebble_led.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pebble_led"]
