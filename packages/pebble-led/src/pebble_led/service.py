@@ -45,6 +45,8 @@ from libpebble_ble import Pebble
 from loguru import logger
 from pebble_le_proto import INTERFACE, decode_data_dict, encode_data_dict
 
+from .notify_monitor import NotificationMonitor
+
 
 class PebbleDaemon(ServiceInterface):
     """D-Bus front end over a single Pebble connection.
@@ -64,6 +66,9 @@ class PebbleDaemon(ServiceInterface):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._reconnect_task: asyncio.Task | None = None
         self._stopping = False
+        self._notify_monitor: NotificationMonitor | None = None
+        # apps whose notifications are pure noise on a watch
+        self._notify_blocklist = {""}
 
     # ------------------------------------------------------------------ #
     # Lifecycle (called by __main__, not over D-Bus)
@@ -73,8 +78,20 @@ class PebbleDaemon(ServiceInterface):
         self._loop = asyncio.get_running_loop()
         self._reconnect_task = self._loop.create_task(self._supervise())
 
+        # Start the desktop-notification monitor. It runs independently of the
+        # watch link; forwards are dropped while the watch is disconnected.
+        self._notify_monitor = NotificationMonitor(self._on_desktop_notification)
+        try:
+            await self._notify_monitor.start()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"could not start notification monitor: {e!r}")
+            self._notify_monitor = None
+
     async def stop(self) -> None:
         self._stopping = True
+        if self._notify_monitor is not None:
+            await self._notify_monitor.stop()
+            self._notify_monitor = None
         if self._reconnect_task is not None:
             self._reconnect_task.cancel()
             try:
@@ -166,6 +183,17 @@ class PebbleDaemon(ServiceInterface):
         # Property-changed notification for `Connected`, plus our explicit signal.
         self.emit_properties_changed({"Connected": value})
         self.ConnectionChanged(value)
+
+    async def _on_desktop_notification(self, app_name: str, summary: str, body: str) -> None:
+        if self._pebble is None or not self._connected:
+            logger.debug(f"watch down; dropping notification from {app_name!r}")
+            return
+        if app_name.lower() in self._notify_blocklist:
+            logger.debug(f"filtered notification from {app_name!r}")
+            return
+        if not summary and not body:
+            return  # empty/progress-only notifications
+        await self._pebble.send_notification(summary, body, subtitle=app_name)
 
     # ------------------------------------------------------------------ #
     # D-Bus properties
