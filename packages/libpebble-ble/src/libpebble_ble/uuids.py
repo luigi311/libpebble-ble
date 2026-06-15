@@ -29,8 +29,10 @@ CONNECTION_PARAMS_CHARACTERISTIC = "00000005-328e-0fbb-c642-1aa6699bdada"
 #   registers and the watch apparently expects to see.
 # ---------------------------------------------------------------------------
 PPOGATT_SERVER_SERVICE = "10000000-328e-0fbb-c642-1aa6699bdada"
-PPOGATT_SERVER_WRITE_CHARACTERISTIC = "10000001-328e-0fbb-c642-1aa6699bdada"  # watch -> us (also NOTIFY us -> watch)
-PPOGATT_SERVER_READ_CHARACTERISTIC = "10000002-328e-0fbb-c642-1aa6699bdada"   # watch reads
+PPOGATT_SERVER_WRITE_CHARACTERISTIC = (
+    "10000001-328e-0fbb-c642-1aa6699bdada"  # watch -> us (also NOTIFY us -> watch)
+)
+PPOGATT_SERVER_READ_CHARACTERISTIC = "10000002-328e-0fbb-c642-1aa6699bdada"  # watch reads
 PPOGATT_BADBAD_SERVICE = "badbadba-dbad-badb-adba-badbadbadbad"
 
 # ---------------------------------------------------------------------------
@@ -43,6 +45,6 @@ PPOGATT_BADBAD_SERVICE = "badbadba-dbad-badb-adba-badbadbadbad"
 # dump; the reference implementation is authoritative.)
 # ---------------------------------------------------------------------------
 PPOGATT_WATCH_NOTIFY = "30000004-328e-0fbb-c642-1aa6699bdada"  # watch -> us
-PPOGATT_WATCH_WRITE = "30000006-328e-0fbb-c642-1aa6699bdada"   # us -> watch
+PPOGATT_WATCH_WRITE = "30000006-328e-0fbb-c642-1aa6699bdada"  # us -> watch
 
 CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"

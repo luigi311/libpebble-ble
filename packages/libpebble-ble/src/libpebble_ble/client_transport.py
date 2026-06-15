@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from .ppogatt import (
-    PPOGATT_WINDOW,
     PPoGATTSession,
     PPoGATTType,
     parse_ppogatt_header,

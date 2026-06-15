@@ -9,7 +9,6 @@ receives our notifications on the same char. This is the working Gadgetbridge
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections import deque
 from typing import TYPE_CHECKING
 

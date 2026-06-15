@@ -24,7 +24,6 @@ the dedup and framing rules live in exactly one place.
 
 from __future__ import annotations
 
-import logging
 import struct
 from enum import IntEnum
 
