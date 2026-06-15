@@ -22,8 +22,10 @@ server unprompted.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timezone
 
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
@@ -473,6 +475,16 @@ class Pebble:
                 )
             else:
                 logger.debug("PPoGATT data channel established")
+                # The watch still needs to complete the PPoGATT RESET handshake
+                # before it will accept Pebble Protocol messages. Wait for it.
+                ready = await self._server.wait_session_ready(timeout=10.0)
+                if not ready:
+                    logger.warning(
+                        "PPoGATT session not confirmed ready; early sends "
+                        "(time sync, launches) may be dropped"
+                    )
+                else:
+                    logger.debug("PPoGATT session ready")
 
             mtu = getattr(self._client, "mtu_size", 0) or 23
             if mtu >= 23 and self._server.mtu == 23:
@@ -639,6 +651,31 @@ class Pebble:
         """
         self._nack_handlers.append(fn)
         return fn
+
+    async def update_time(self) -> None:
+        """Sync the watch's clock to this machine's current local time.
+
+        Sends a TIME SET_UTC message with the host's current UTC timestamp,
+        the host's local UTC offset (in minutes, DST-aware), and the local
+        timezone name. The watch stores UTC and applies the offset for display.
+        """
+        if not self._connected.is_set():
+            msg = "not connected"
+            raise RuntimeError(msg)
+
+        now = datetime.now(UTC)
+        utc_ts = int(now.timestamp())
+
+        local = now.astimezone()  # host's configured local zone
+        offset = local.utcoffset()
+        offset_minutes = int(offset.total_seconds() // 60) if offset else 0
+        tz_name = local.tzname() or ""
+
+        logger.debug(f"setting watch time: utc={utc_ts} offset={offset_minutes}min tz={tz_name!r}")
+        self._send_pebble(
+            Endpoint.TIME,
+            protocol.build_set_utc(utc_ts, offset_minutes, tz_name),
+        )
 
     async def launch_app(self, app_uuid: str):
         """Ask the watch to launch the watchapp identified by app_uuid.

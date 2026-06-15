@@ -199,6 +199,7 @@ class PebbleGattServer:
         self._session = PPoGATTSession()
         self._tx_queue: deque[bytes] = deque()  # chunk payloads awaiting a window slot
         self._connected_evt = asyncio.Event()
+        self._session_ready_evt = asyncio.Event()
 
     async def start(self):
         self._loop = self._loop or asyncio.get_running_loop()
@@ -297,9 +298,14 @@ class PebbleGattServer:
                 self._send_raw(bytes([0x03, PPOGATT_WINDOW, PPOGATT_WINDOW]))
             else:
                 self._send_raw(bytes([0x03]))
+            # the watch initiated reset; once we've replied the session is live
+            if not self._session_ready_evt.is_set():
+                self._session_ready_evt.set()
             return
         if command == PPoGATTType.RESET_COMPLETE:
             logger.debug("PPoGATT reset complete")
+            if not self._session_ready_evt.is_set():
+                self._session_ready_evt.set()
             return
         if command == PPoGATTType.ACK:
             logger.trace(f"PPoGATT ack serial={serial}")
@@ -316,6 +322,15 @@ class PebbleGattServer:
                     self.on_data(message)
             return
         logger.debug(f"PPoGATT unknown command {command} ignored")
+
+    async def wait_session_ready(self, timeout: float):
+        """Wait until the PPoGATT reset handshake has completed and the
+        channel can actually carry Pebble Protocol messages."""
+        try:
+            await asyncio.wait_for(self._session_ready_evt.wait(), timeout)
+            return True
+        except TimeoutError:
+            return False
 
     def _send_raw(self, packet: bytes):
         """Notify a raw PPoGATT packet to the watch on the write characteristic."""
@@ -335,7 +350,9 @@ class PebbleGattServer:
     def _pump_tx(self):
         while self._tx_queue and self._session.can_send():
             chunk = self._tx_queue.popleft()
-            header = ppogatt_header(PPoGATTType.DATA, self._session.next_tx_seq())
+            seq = self._session.next_tx_seq()
+            header = ppogatt_header(PPoGATTType.DATA, seq)
+            logger.trace(f"PPoGATT tx DATA seq={seq} len={len(chunk)}")
             self._send_raw(bytes([header]) + chunk)
 
     async def stop(self):

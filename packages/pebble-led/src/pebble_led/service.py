@@ -12,6 +12,8 @@ Interface (org.pebble_le.Daemon on /org/pebble_le/Daemon):
         Width pins (u8/u16/...) survive via the proto codec's (tag,payload).
     LaunchApp(s app_uuid)
     StopApp(s app_uuid)
+    UpdateTime()
+            Sync the watch's clock to the daemon host's current local time.
     Ping() -> b
         Cheap "are you really responding" probe (distinct from name-has-owner,
         which only proves the process exists).
@@ -106,6 +108,12 @@ class PebbleDaemon(ServiceInterface):
                 backoff = 2.0
                 logger.success("watch connected; daemon ready")
 
+                try:
+                    await pebble.update_time()
+                    logger.info("watch time synchronized")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"time sync on connect failed: {e!r}")
+
                 # Park here until the link drops. We detect drop by polling the
                 # library's internal connected event; when it clears, we fall
                 # through to reconnect. (A future libpebble_ble disconnect
@@ -199,6 +207,10 @@ class PebbleDaemon(ServiceInterface):
     @method()
     async def StopApp(self, app_uuid: "s"):  # noqa: N802, F821
         await self._require_connected().stop_app(app_uuid)
+
+    @method()
+    async def UpdateTime(self):  # noqa: N802
+        await self._require_connected().update_time()
 
     @method()
     def Ping(self) -> "b":  # noqa: N802, F821

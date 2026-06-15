@@ -62,7 +62,7 @@ from .appmessage import (
 )
 from .exceptions import PebbleNackError
 from .pebble import AckHandler, AppMessageHandler, NackHandler, Pebble
-from .protocol import AppRunStateCmd, Endpoint
+from .protocol import AppRunStateCmd, Endpoint, TimeCmd
 
 __version__ = "0.1.0"
 
@@ -76,6 +76,7 @@ __all__ = [
     "NackHandler",
     "Pebble",
     "PebbleNackError",
+    "TimeCmd",
     "TupleType",
     "__version__",
     "i8",

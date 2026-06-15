@@ -131,3 +131,42 @@ class AppRunStateCmd(IntEnum):
 
 def build_app_run_state(cmd: AppRunStateCmd, app_uuid: str) -> bytes:
     return bytes([int(cmd)]) + uuid_to_bytes(app_uuid)
+
+
+# ---------------------------------------------------------------------------
+# TIME (endpoint 11)
+# ---------------------------------------------------------------------------
+
+
+class TimeCmd(IntEnum):
+    GET_REQUEST = 0x00  # TIME_GETTIME
+    SET_LOCALTIME = 0x02  # TIME_SETTIME (legacy: u32 local-time only)
+    SET_UTC = 0x03  # TIME_SETTIME_UTC (u32 UTC + s16 offset + tz name)
+
+
+def build_set_utc(
+    utc_timestamp: int,
+    utc_offset_minutes: int,
+    tz_name: str = "",
+) -> bytes:
+    """SET_UTC payload for the TIME endpoint.
+
+    Layout (big-endian), per Gadgetbridge encodeSetTime / libpebble2 SetUTC:
+      u8   command            0x03 = TIME_SETTIME_UTC
+      u32  unix_timestamp     seconds since epoch, UTC
+      s16  utc_offset         local offset from UTC, in MINUTES
+      u8   tz_name_length
+      ...  tz_name            ASCII, not NUL-terminated
+
+    The watch keeps UTC internally and applies the offset for display, so the
+    offset must be the *local* zone's current offset (including DST) — e.g.
+    -360 for US Mountain Daylight Time.
+    """
+    name = tz_name.encode("utf-8")
+    if len(name) > 0xFF:
+        name = name[:0xFF]
+    return (
+        struct.pack(">BIh", int(TimeCmd.SET_UTC), utc_timestamp & 0xFFFFFFFF, utc_offset_minutes)
+        + struct.pack(">B", len(name))
+        + name
+    )
