@@ -1,19 +1,4 @@
-"""AppMessage — the key/value dict protocol Pebble watchapps use.
-
-AppMessage payload layout (on the APP_MESSAGE endpoint):
-  u8  command   (0x01 PUSH, 0x02 ACK, 0x03 NACK)
-  u8  transaction_id
-  16  app uuid  (only for PUSH)
-  u8  tuple_count           (only for PUSH)
-  then `tuple_count` tuples:
-      u32 key
-      u8  type   (see TupleType)
-      u16 length
-      length bytes value
-
-Tuple headers and integer values are little-endian (matching the watch's CPU);
-note this is the opposite of the big-endian Pebble Protocol frame around it.
-"""
+"""AppMessage — the key/value dict protocol Pebble watchapps use. (verbatim)"""
 
 from __future__ import annotations
 
@@ -30,6 +15,15 @@ class AppMessageCmd(IntEnum):
     NACK = 0x03
 
 
+# Some Pebble firmware/transport paths encode the AppMessage ACK/NACK with the
+# high-bit-set bytes instead of 0x02/0x03 (verified against Gadgetbridge's
+# PebbleProtocol: APPLICATIONMESSAGE_ACK = 0xff, APPLICATIONMESSAGE_NACK = 0x7f).
+# We normalize both encodings to the same AppMessageCmd so callers only ever
+# see ACK/NACK regardless of which the watch sends.
+APPMESSAGE_ACK_ALT = 0xFF
+APPMESSAGE_NACK_ALT = 0x7F
+
+
 class TupleType(IntEnum):
     BYTES = 0
     CSTRING = 1
@@ -38,17 +32,6 @@ class TupleType(IntEnum):
 
 
 class Int:
-    """Wrap an int to force an exact AppMessage byte width.
-
-    Pebble watchapps read a specific union member (uint8/uint16/uint32, or the
-    signed equivalents). The auto-encoder picks the smallest width that fits,
-    which can mismatch what the app reads (e.g. app does t->value->uint16 but a
-    small number encoded as 1 byte). Use these to pin the width:
-
-        from pebble_le import u8, u16, u32, i8, i16, i32
-        await pebble.send_app_message(uuid, {1: u16(150), 4: u32(5000)})
-    """
-
     __slots__ = ("value", "width", "signed")
 
     def __init__(self, value: int, width: int, signed: bool):
@@ -98,8 +81,7 @@ def _encode_tuple(key: int, value: AppMessageValue) -> bytes:
         ttype = TupleType.INT if value.signed else TupleType.UINT
         return struct.pack("<IBH", key, int(ttype), len(raw)) + raw
     if isinstance(value, bool):
-        msg = "bool is ambiguous; pass int"
-        raise TypeError(msg)
+        raise TypeError("bool is ambiguous; pass int")
     if isinstance(value, str):
         raw = value.encode("utf-8") + b"\x00"
         ttype = TupleType.CSTRING
@@ -107,7 +89,6 @@ def _encode_tuple(key: int, value: AppMessageValue) -> bytes:
         raw = bytes(value)
         ttype = TupleType.BYTES
     elif isinstance(value, int):
-        # Pick the smallest signed/unsigned width that fits.
         if value < 0:
             for fmt in ("<b", "<h", "<i"):
                 try:
@@ -116,8 +97,7 @@ def _encode_tuple(key: int, value: AppMessageValue) -> bytes:
                 except struct.error:
                     continue
             else:
-                msg = f"int {value} too large for AppMessage"
-                raise OverflowError(msg)
+                raise OverflowError(f"int {value} too large for AppMessage")
             ttype = TupleType.INT
         else:
             for fmt in ("<B", "<H", "<I"):
@@ -127,12 +107,10 @@ def _encode_tuple(key: int, value: AppMessageValue) -> bytes:
                 except struct.error:
                     continue
             else:
-                msg_0 = f"int {value} too large for AppMessage"
-                raise OverflowError(msg_0)
+                raise OverflowError(f"int {value} too large for AppMessage")
             ttype = TupleType.UINT
     else:
-        msg_1 = f"unsupported AppMessage value type: {type(value)}"
-        raise TypeError(msg_1)
+        raise TypeError(f"unsupported AppMessage value type: {type(value)}")
     return struct.pack("<IBH", key, int(ttype), len(raw)) + raw
 
 
@@ -155,11 +133,7 @@ def _decode_tuples(payload: bytes) -> dict[int, int | str | bytes]:
     return out
 
 
-def build_app_message_push(
-    transaction_id: int,
-    app_uuid: str,
-    data: dict[int, AppMessageValue],
-) -> bytes:
+def build_app_message_push(transaction_id: int, app_uuid: str, data: dict) -> bytes:
     body = struct.pack("<BB", int(AppMessageCmd.PUSH), transaction_id & 0xFF)
     body += uuid_to_bytes(app_uuid)
     body += struct.pack("<B", len(data))
@@ -173,14 +147,15 @@ def build_app_message_ack(transaction_id: int) -> bytes:
 
 
 def parse_app_message(payload: bytes):
-    """Returns (cmd, transaction_id, app_uuid|None, dict|None).
-
-    cmd is an AppMessageCmd when recognized, else the raw int. The watch sends
-    control/command bytes (e.g. 0x7F) we don't model; an unknown one must not
-    crash the reader. Callers act only on PUSH/ACK/NACK and ignore the rest.
-    """
     if len(payload) < 2:
         return None, None, None, None
+    raw_cmd = payload[0]
+    # Normalize the alternate high-bit ACK/NACK encoding (0xff/0x7f) that some
+    # firmware uses, to the same AppMessageCmd as the 0x02/0x03 form.
+    if raw_cmd == APPMESSAGE_ACK_ALT:
+        return AppMessageCmd.ACK, payload[1], None, None
+    if raw_cmd == APPMESSAGE_NACK_ALT:
+        return AppMessageCmd.NACK, payload[1], None, None
     try:
         cmd = AppMessageCmd(payload[0])
     except ValueError:
@@ -188,7 +163,6 @@ def parse_app_message(payload: bytes):
     txn = payload[1]
     if cmd == AppMessageCmd.PUSH and len(payload) >= 19:
         app_uuid = str(_uuid.UUID(bytes=payload[2:18]))
-        # payload[18] = tuple count; tuples follow.
         tuples = _decode_tuples(payload[19:])
         return cmd, txn, app_uuid, tuples
     return cmd, txn, None, None
