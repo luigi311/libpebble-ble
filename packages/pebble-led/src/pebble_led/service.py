@@ -131,13 +131,9 @@ class PebbleDaemon(ServiceInterface):
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"time sync on connect failed: {e!r}")
 
-                # Park here until the link drops. We detect drop by polling the
-                # library's internal connected event; when it clears, we fall
-                # through to reconnect. (A future libpebble_ble disconnect
-                # callback would let us await instead of poll.)
-                while not self._stopping and pebble._connected.is_set():
-                    await asyncio.sleep(1.0)
-
+                # Park until the link drops. The library clears _connected from
+                # its bleak disconnected_callback when the watch goes away.
+                await pebble.wait_disconnected()
                 logger.warning("watch link went down")
             except asyncio.CancelledError:
                 raise
