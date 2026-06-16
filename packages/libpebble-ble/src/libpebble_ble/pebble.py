@@ -276,7 +276,11 @@ class Pebble:
         for i in range(1, attempts + 1):
             try:
                 device, props = await self._resolve_device(timeout)
-                self._client = BleakClient(device, timeout=timeout)
+                self._client = BleakClient(
+                    device,
+                    timeout=timeout,
+                    disconnected_callback=self._on_bleak_disconnect,
+                )
                 try:
                     await self._client.connect()
                 except Exception as e:
@@ -300,6 +304,17 @@ class Pebble:
             f"seconds, or toggle Bluetooth/Airplane mode on the watch."
         )
         raise RuntimeError(msg) from last_error
+
+    def _on_bleak_disconnect(self, _client: BleakClient) -> None:
+        """Fired by bleak when the GATT client link drops (range, airplane
+        mode, watch reboot). Clears the connected event so the supervisor's
+        wait wakes and reconnects. Runs in bleak's callback context, so we
+        only flip state here and let teardown happen on the loop."""
+        logger.warning("bleak reported watch disconnect")
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._connected.clear)
+        else:
+            self._connected.clear()
 
     async def _do_pairing(self, watch_initiated_wait: float = 10.0) -> bool:
         """Bond with the watch. Returns True once BlueZ reports Paired.
@@ -519,6 +534,12 @@ class Pebble:
             self._server = None
         if self._client and self._client.is_connected:
             await self._client.disconnect()
+
+    async def wait_disconnected(self) -> None:
+        """Block until the watch link drops (the connected event clears)."""
+        # Event has no 'wait for clear'; poll the flag with a short sleep.
+        while self._connected.is_set():
+            await asyncio.sleep(0.5)
 
     async def forget(self) -> None:
         """Remove this watch from BlueZ (clears the host-side bond).
