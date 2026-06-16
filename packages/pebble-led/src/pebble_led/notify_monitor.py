@@ -71,7 +71,7 @@ class NotificationMonitor:
 
     def _handle_message(self, message: Message) -> bool:
         try:
-            logger.info(
+            logger.trace(
                 f"MON: type={message.message_type} "
                 f"path={message.path} iface={message.interface} member={message.member}"
             )
