@@ -73,30 +73,46 @@ asyncio.run(main())
 Note the call site is identical to using `libpebble_ble.Pebble` directly — same
 decorator, same dict, same width wrappers. That symmetry is deliberate.
 
-## Developing
 
-```sh
-uv sync                 # resolves all four packages locally, one lockfile
-uv run pytest           # runs the codec round-trip tests
-uv run pebble-led <addr>
-```
+## Supported features
 
-This scaffold ships **trimmed placeholders** for the four library files that
-need a live BlueZ/bleak stack (`pebble.py`, `gatt_server.py`, `agent.py`,
-`client_transport.py`). Drop your real implementations in with:
+### libpebble-ble
+- [x] Connect via ble
+- [x] Pings
+- [x] App Launch
+- [x] AppMessage
+- [x] Time sync
+- [ ] Notifications
+  - [x] Send
+  - [ ] Actions 
+  - [ ] Categorization (Text/Call/Other)
+- [ ] Weather
+- [ ] Health
+  - [ ] Steps
+  - [ ] Sleep
+  - [ ] Heartrate
+- [ ] Music
+  - [ ] Playing status
+  - [ ] Controls
+- [ ] PBW install
 
-```sh
-./scripts/import-existing-lib.sh /path/to/your/libpebble_ble
-```
+### pebble-led (Daemon)
+- [x] Pings
+- [x] Reconnects
+- [x] Time Sync
+- [ ] Notificiations
+  - [x] Forwarding
+  - [ ] Actions (Dismiss)
+  - [ ] Categorizations
+- [x] AppMessages
+  - [x] External applications
+- [ ] Music
+- [ ] Health
+- [ ] Weather
 
-The other library files (protocol, appmessage, ppogatt, uuids, exceptions) are
-the real thing.
 
 ## Why one repo
 
 The client and daemon **must** agree on the wire contract. A monorepo makes a
 contract change one atomic commit that CI runs across both ends — there's never
-a window where they disagree. Split a package out only when something external
-starts depending on its release schedule (most likely candidates later:
-`libpebble-ble` on PyPI, or `pebble-le-client` for third-party app authors).
-Both can publish from the monorepo without leaving it.
+a window where they disagree.
