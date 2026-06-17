@@ -52,6 +52,7 @@ class _Characteristic(ServiceInterface):
         on_write=None,
         read_value=None,
         on_subscribe=None,
+        on_unsubscribe=None,
     ):
         super().__init__("org.bluez.GattCharacteristic1")
         self.path = path
@@ -62,6 +63,7 @@ class _Characteristic(ServiceInterface):
         self._notifying = False
         self._on_write = on_write
         self._on_subscribe = on_subscribe
+        self._on_unsubscribe = on_unsubscribe
 
     # --- properties BlueZ reads ---
     @dbus_property(access=PropertyAccess.READ)
@@ -105,7 +107,10 @@ class _Characteristic(ServiceInterface):
 
     @method()
     def StopNotify(self):
+        logger.debug(f"GATT-server StopNotify on {self._uuid} (watch unsubscribed)")
         self._notifying = False
+        if self._on_unsubscribe:
+            self._on_unsubscribe()
 
     def notify(self, data: bytes):
         """Push a notification to the watch by emitting PropertiesChanged."""
@@ -186,10 +191,12 @@ class PebbleGattServer:
         self,
         adapter: str = "hci0",
         on_data: Callable[[bytes], None] | None = None,
+        on_disconnect: Callable[[], None] | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
     ):
         self.adapter = adapter
         self.on_data = on_data
+        self._on_disconnect = on_disconnect
         self._loop = loop
         self._bus: MessageBus | None = None
         self._app: _Application | None = None
@@ -228,6 +235,7 @@ class PebbleGattServer:
             svc.path,
             on_write=self._handle_ppogatt_in,
             on_subscribe=self._on_watch_subscribed,
+            on_unsubscribe=self._on_watch_unsubscribed,
         )
         self._app.characteristics += [self._read_char, self._write_char]
 
@@ -279,6 +287,13 @@ class PebbleGattServer:
         logger.debug("watch subscribed to PPoGATT server characteristic")
         if not self._connected_evt.is_set():
             self._connected_evt.set()
+
+    def _on_watch_unsubscribed(self):
+        logger.warning("watch unsubscribed from PPoGATT server (link down)")
+        self._connected_evt.clear()
+        self._session_ready_evt.clear()
+        if self._on_disconnect:
+            self._on_disconnect()
 
     # ---- PPoGATT transport (mirrors PebbleLESupport.handlePPoGATTPacket) ----
     def _handle_ppogatt_in(self, packet: bytes):
