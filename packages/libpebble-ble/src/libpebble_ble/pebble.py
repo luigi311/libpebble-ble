@@ -74,8 +74,11 @@ class Pebble:
     # transaction_id -> asyncio.Future resolved when the watch ACK/NACKs it
     _pending: dict = field(default_factory=dict, init=False)
     _connected: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+    _link_lost: bool = field(default=False, init=False)
     # characteristics we successfully subscribed to (for clean teardown)
     _subscribed: list = field(default_factory=list, init=False)
+    _props_bus: MessageBus | None = field(default=None, init=False)
+    _props_obj: object | None = field(default=None, init=False)
 
     # ---- discovery ----
     @staticmethod
@@ -305,12 +308,57 @@ class Pebble:
         )
         raise RuntimeError(msg) from last_error
 
+    async def _watch_device_connected(self) -> None:
+        """Subscribe to org.bluez.Device1 PropertiesChanged. When BlueZ reports
+        Connected=False the watch is gone, regardless of which channel noticed
+        first. This is the authoritative drop signal — bleak's client callback
+        and the server's StopNotify can both miss an ungraceful drop (range,
+        airplane mode), but BlueZ always updates this property once its link
+        supervision times out."""
+        bus = None
+        try:
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            path = self._device_path()
+            introspect = await bus.introspect(BLUEZ, path)
+            obj = bus.get_proxy_object(BLUEZ, path, introspect)
+            props = obj.get_interface(PROPERTIES_IFACE)
+
+            def on_props_changed(iface: str, changed: dict, _invalidated: list) -> None:
+                if iface != DEVICE_IFACE:
+                    return
+                conn = changed.get("Connected")
+                if conn is not None and not conn.value:
+                    logger.warning("BlueZ reports device Connected=False; watch dropped")
+                    self._on_link_lost()
+
+            props.on_properties_changed(on_props_changed)
+            self._props_bus = bus
+            self._props_obj = obj
+            logger.debug("subscribed to Device1.Connected property changes")
+        except Exception as e:
+            logger.warning(f"could not subscribe to Device1 property changes: {e!r}")
+            if bus is not None:
+                try:
+                    bus.disconnect()
+                except Exception:
+                    pass
+                self._props_bus = None
+                self._props_obj = None
+
     def _on_bleak_disconnect(self, _client: BleakClient) -> None:
         """Fired by bleak when the GATT client link drops (range, airplane
         mode, watch reboot). Clears the connected event so the supervisor's
         wait wakes and reconnects. Runs in bleak's callback context, so we
         only flip state here and let teardown happen on the loop."""
         logger.warning("bleak reported watch disconnect")
+        self._on_link_lost()
+
+    def _on_link_lost(self) -> None:
+        """Single place that marks the watch link dead. Reached from three
+        independent detectors: bleak's client disconnected_callback, the GATT
+        server's StopNotify, and the BlueZ Device1.Connected property watch.
+        Any one firing is enough; clearing the event is idempotent."""
+        self._link_lost = True
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._connected.clear)
         else:
@@ -364,13 +412,17 @@ class Pebble:
         retry_delay: float = 2.0,
     ):
         self._loop = asyncio.get_running_loop()
+        self._link_lost = False
 
         # 1. Bring up OUR GATT server FIRST (the 10000000 service). This is the
         #    working Gadgetbridge architecture: the phone hosts a server and the
         #    watch connects back to it as a client to carry PPoGATT data. The
         #    server must exist before the watch is told to connect back.
         self._server = PebbleGattServer(
-            self.adapter, on_data=self._on_pebble_message, loop=self._loop
+            self.adapter,
+            on_data=self._on_pebble_message,
+            on_disconnect=self._on_link_lost,
+            loop=self._loop,
         )
         await self._server.start()
 
@@ -508,10 +560,23 @@ class Pebble:
                 self._server.set_mtu(mtu)
             logger.debug(f"ATT MTU = {self._server.mtu}")
 
+            await self._watch_device_connected()
+
+            if self._link_lost:
+                msg = "watch link dropped during connect setup; not marking connected"
+                raise RuntimeError(msg)
+
             self._connected.set()
         except BaseException:
             # Don't leak the GATT server registration or a half-open client.
             await self._teardown_client()
+            if self._props_bus is not None:
+                try:
+                    self._props_bus.disconnect()
+                except Exception as exc:
+                    logger.trace(f"props bus disconnect during connect teardown failed: {exc!r}")
+                self._props_bus = None
+                self._props_obj = None
             if self._server:
                 await self._server.stop()
                 self._server = None
@@ -522,6 +587,13 @@ class Pebble:
 
     async def disconnect(self):
         self._connected.clear()
+        if self._props_bus is not None:
+            try:
+                self._props_bus.disconnect()
+            except Exception as exc:
+                logger.trace(f"props bus disconnect failed: {exc!r}")
+            self._props_bus = None
+            self._props_obj = None
         if self._client and self._client.is_connected:
             for char_uuid in self._subscribed:
                 try:
