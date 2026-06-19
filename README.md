@@ -74,6 +74,52 @@ Note the call site is identical to using `libpebble_ble.Pebble` directly — sam
 decorator, same dict, same width wrappers. That symmetry is deliberate.
 
 
+## Installing the daemon
+
+Grab the latest `.deb` from [Releases](../../releases) and install it. Its
+dependencies (bleak, dbus-fast, loguru, bluez) come from your distro — the
+package bundles only the three Python modules:
+
+```sh
+sudo apt install ./pebble-led_*_all.deb
+```
+
+### Configure the daemon
+
+Tell it your watch's address. The unit reads this from a per-user env file
+rather than baking it in, so the package is the same for everyone:
+
+```sh
+mkdir -p ~/.config/pebble-led
+echo 'PEBBLE_ADDRESS=E6:94:0A:D4:D5:DC' > ~/.config/pebble-led/env
+```
+
+Start it. It runs as a **user** service, not a system one — the notification
+monitor eavesdrops on your *session* bus, which only exists inside your login,
+so a root system service would never see your notifications:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user start pebble-led.service
+```
+
+Enable it to start at login and keep running after logout / across reboots:
+
+```sh
+systemctl --user enable pebble-led.service
+```
+
+### Troubleshooting
+
+* **BlueZ calls fail with `AccessDenied`** — add yourself to the `bluetooth`
+  group and start a fresh session: `sudo usermod -aG bluetooth "$USER"`, then
+  log out and back in.
+* **Notification monitor warns about the session bus at startup** — the daemon
+  started before your desktop session bus was ready. Harmless if started by
+  hand (your session's already up); the `graphical-session.target` ordering in
+  the unit handles it for login/boot starts.
+
+
 ## Supported features
 
 ### libpebble-ble
