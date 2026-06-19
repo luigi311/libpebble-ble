@@ -1,16 +1,14 @@
 [Unit]
-Description=Pebble LE daemon (owns the BLE connection to the watch)
-Documentation=https://github.com/yourname/pebble-le
-After=bluetooth.target
-Wants=bluetooth.target
+Description=Pebble BLE daemon (libpebble-ble)
+After=bluetooth.target graphical-session.target
+Wants=graphical-session.target
 
 [Service]
 Type=simple
-# Set your watch address here, or override with `systemctl --user edit`.
-Environment=PEBBLE_WATCH_ADDRESS=E6:94:0A:D4:D5:DC
-ExecStart=pebble-led ${PEBBLE_WATCH_ADDRESS}
+EnvironmentFile=%h/.config/pebble-led/env
+ExecStart=/usr/bin/pebble-led ${PEBBLE_ADDRESS}
 Restart=on-failure
-RestartSec=3
+RestartSec=5
 
 [Install]
 WantedBy=default.target

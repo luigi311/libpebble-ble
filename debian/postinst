@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Enable the USER unit for all users. We cannot start it here (no user
+        # session in scope from a root maintainer script, and the watch address
+        # isn't configured until the user creates ~/.config/pebble-led/env).
+        systemctl --global enable pebble-led.service >/dev/null 2>&1 || true
+        ;;
+esac
+
+#DEBHELPER#
+exit 0
