@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to upload assets to a release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debhelper dh-python pybuild-plugin-pyproject \
+            build-essential \
+            python3-all python3-hatchling devscripts
+
+      - name: Verify tag matches changelog version
+        if: github.event_name == 'release'
+        run: |
+          CHANGELOG_VERSION="$(dpkg-parsechangelog -S Version | sed 's/-[0-9]*$//')"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "changelog: ${CHANGELOG_VERSION}   tag: ${TAG_VERSION}"
+          if [ "$CHANGELOG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag ${TAG_VERSION} does not match debian/changelog version ${CHANGELOG_VERSION}. Bump the changelog (dch -v ${TAG_VERSION}-1) and re-tag." >&2
+            exit 1
+          fi
+
+      - name: Build the .deb
+        run: |
+          dpkg-buildpackage -us -uc -b
+          mkdir -p dist
+          mv ../pebble-led_*_all.deb dist/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pebble-led-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+      - name: Attach .deb to the release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
