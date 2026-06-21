@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use libpebble_ble::Pebble;
+use libpebble_ble::{HealthDataHandler, Pebble};
 use tracing::{debug, info, warn};
 
 use crate::service::{DaemonEvent, PebbleDaemon};
@@ -32,6 +32,10 @@ pub async fn run_supervisor(daemon: PebbleDaemon, address: String, adapter: Stri
             pebble.on_nack(Arc::new(move |txn| {
                 let _ = tx.send(DaemonEvent::NackReceived(txn));
             }));
+            let tx = event_tx.clone();
+            pebble.on_health(Arc::new(move |batch| {
+                let _ = tx.send(DaemonEvent::HealthData(batch));
+            }) as HealthDataHandler);
         }
 
         match pebble.connect().await {
