@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use tokio::{signal, sync::mpsc};
+use tokio::{signal, signal::unix::SignalKind, sync::mpsc};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -80,8 +80,10 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Run until SIGINT or SIGTERM.
+    let mut sigterm = signal::unix::signal(SignalKind::terminate())?;
     tokio::select! {
         _ = signal::ctrl_c() => {},
+        _ = sigterm.recv() => {},
     }
 
     info!("shutting down ...");

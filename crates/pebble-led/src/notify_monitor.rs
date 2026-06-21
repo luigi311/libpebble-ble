@@ -20,11 +20,12 @@ const NOTIFICATIONS_IFACE: &str = "org.freedesktop.Notifications";
 
 pub struct NotificationMonitor {
     conn: Option<Connection>,
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl NotificationMonitor {
     pub fn new() -> Self {
-        Self { conn: None }
+        Self { conn: None, task: None }
     }
 
     pub async fn start(
@@ -67,7 +68,7 @@ impl NotificationMonitor {
 
         let conn_clone = conn.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut stream = MessageStream::from(&conn_clone);
             while let Some(msg) = stream.next().await {
                 let msg = match msg {
@@ -81,11 +82,15 @@ impl NotificationMonitor {
             }
         });
 
+        self.task = Some(handle);
         self.conn = Some(conn);
         Ok(())
     }
 
     pub async fn stop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
         self.conn = None;
     }
 }
