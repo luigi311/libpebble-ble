@@ -3,21 +3,21 @@ Section: comm
 Priority: optional
 Maintainer: Luis Garcia <git@luigi311.com>
 Build-Depends: debhelper-compat (= 13),
-               dh-python,
-               python3-all,
-               pybuild-plugin-pyproject,
-               python3-hatchling
+               build-essential,
+               cargo,
+               rustc,
+               pkg-config,
+               libexpat-dev
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
 
 Package: pebble-led
-Architecture: all
-Depends: ${python3:Depends},
-         ${misc:Depends},
-         python3-bleak,
-         python3-dbus-fast,
-         python3-loguru
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Pebble smartwatch BLE daemon
  Connects to a Pebble smartwatch over Bluetooth Low Energy and runs as a
  user service providing time sync, desktop-notification forwarding, and an
  AppMessage bridge over D-Bus.
+ .
+ The daemon links libdbus statically; there is no runtime libdbus dependency.
+ BlueZ is accessed through the system D-Bus.

@@ -1,0 +1,20 @@
+[Unit]
+Description=Pebble BLE daemon
+Documentation=https://github.com/luigi311/libpebble-ble
+After=bluetooth.target graphical-session.target
+Wants=bluetooth.target
+# Skip the service cleanly when the env file hasn't been created yet; without
+# this, an absent file causes ExecStart to receive an empty PEBBLE_ADDRESS and
+# the daemon exits non-zero, triggering a Restart=on-failure loop.
+ConditionPathExists=%h/.config/pebble-led/env
+
+[Service]
+Type=simple
+# Watch address lives in ~/.config/pebble-led/env as PEBBLE_ADDRESS=XX:XX:XX:XX:XX:XX
+EnvironmentFile=-%h/.config/pebble-led/env
+ExecStart=/usr/bin/pebble-led ${PEBBLE_ADDRESS}
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

@@ -28,12 +28,12 @@ The width wrappers (u8/u16/u32/i8/i16/i32) are re-exported here so apps don't
 need to depend on libpebble-ble directly just to pin an integer width.
 """
 
-from libpebble_ble import i8, i16, i32, u8, u16, u32
-
+from ._types import Int, i8, i16, i32, u8, u16, u32
 from .client import DaemonNotRunningError, NotConnectedError, PebbleClient
 
 __all__ = [
     "DaemonNotRunningError",
+    "Int",
     "NotConnectedError",
     "PebbleClient",
     "i8",

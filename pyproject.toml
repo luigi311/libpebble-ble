@@ -1,17 +1,11 @@
 [project]
 name = "pebble-le-workspace"
 version = "0.0.0"
-description = "Workspace root for the pebble-le packages (library, proto contract, daemon, client)."
+description = "Workspace root — Python client for the pebble-led Rust daemon."
 requires-python = ">=3.11"
-# This is a virtual workspace root — it ships nothing itself, it just ties the
-# member packages together so they resolve against each other locally.
 
 [tool.uv.workspace]
-members = ["packages/*"]
-
-[tool.uv.sources]
-libpebble-ble = { workspace = true }
-pebble-le-proto = { workspace = true }
+members = ["packages/pebble-le-client"]
 
 # Dev tooling shared across the workspace.
 [dependency-groups]
@@ -23,7 +17,7 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["packages"]
+testpaths = ["packages/pebble-le-client/tests"]
 
 [tool.ruff]
 line-length = 100

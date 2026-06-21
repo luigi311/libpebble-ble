@@ -14,14 +14,13 @@ from collections.abc import Callable
 from dbus_fast import DBusError, Variant
 from dbus_fast.aio import MessageBus
 from dbus_fast.constants import BusType
-from pebble_le_proto import (
-    BUS_NAME,
-    INTERFACE,
-    OBJECT_PATH,
-    USE_SESSION_BUS,
-    decode_data_dict,
-    encode_data_dict,
-)
+
+from ._codec import decode_data_dict, encode_data_dict
+
+BUS_NAME = "org.pebble_le.Daemon"
+OBJECT_PATH = "/org/pebble_le/Daemon"
+INTERFACE = "org.pebble_le.Daemon"
+USE_SESSION_BUS = True
 
 # Same handler shapes libpebble_ble uses, so code reads identically either side.
 AppMessageHandler = Callable[[str, dict], None]
