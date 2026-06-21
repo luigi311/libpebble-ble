@@ -205,12 +205,21 @@ impl Pebble {
             Arc::new(move || {
                 warn!("watch disconnected from PPoGATT server");
                 let _ = connected_tx_for_disc.send(false);
-                let inner = inner_for_disc.lock().unwrap();
-                for h in &inner.nack_handlers {
-                    // Resolve all pending with false (NACK) on disconnect.
-                    let _ = h; // (pending resolution happens below)
+                // Drain pending and snapshot handlers while holding the lock,
+                // then drop it before invoking handlers to avoid re-entrant deadlock.
+                let (pending, nack_handlers) = {
+                    let mut inner = inner_for_disc.lock().unwrap();
+                    let pending: Vec<(u8, oneshot::Sender<bool>)> =
+                        inner.pending.drain().collect();
+                    let nack_handlers = inner.nack_handlers.clone();
+                    (pending, nack_handlers)
+                };
+                for (txn, sender) in pending {
+                    let _ = sender.send(false);
+                    for h in &nack_handlers {
+                        h(txn);
+                    }
                 }
-                drop(inner);
             }),
             connected_notify_for_task,
             session_ready_for_task,
