@@ -188,12 +188,12 @@ marshalling transparently.
 - [ ] Notifications
   - [x] Send
   - [ ] Actions 
-  - [ ] Categorization (Text/Call/Other)
+  - [x] Categorization (Text/Call/Other)
 - [ ] Weather
-- [ ] Health
-  - [ ] Steps
-  - [ ] Sleep
-  - [ ] Heartrate
+- [x] Health
+  - [x] Steps
+  - [x] Sleep
+  - [x] Heartrate
 - [ ] Music
   - [ ] Playing status
   - [ ] Controls
@@ -206,11 +206,11 @@ marshalling transparently.
 - [ ] Notificiations
   - [x] Forwarding
   - [ ] Actions (Dismiss)
-  - [ ] Categorizations
+  - [x] Categorizations
 - [x] AppMessages
   - [x] External applications
 - [ ] Music
-- [ ] Health
+- [x] Health
 - [ ] Weather
 
 
