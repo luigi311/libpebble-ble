@@ -115,7 +115,16 @@ impl PPoGATTSession {
     /// confirming every in-flight packet up to and including it.
     pub fn on_ack(&mut self, serial: u8) {
         let covered = ((serial.wrapping_sub(self.tx_ack_seq)) & 0x1F) + 1;
-        let covered = covered.min(self.tx_inflight);
+        if covered > self.tx_inflight {
+            // Serial is behind tx_ack_seq (stale duplicate) or beyond the
+            // in-flight window (watch ACKed something we never sent).
+            tracing::warn!(
+                "PPoGATT ACK serial={serial} out-of-window \
+                 (covered={covered} inflight={}); ignoring",
+                self.tx_inflight
+            );
+            return;
+        }
         self.tx_inflight -= covered;
         self.tx_ack_seq = (serial + 1) & 0x1F;
     }
