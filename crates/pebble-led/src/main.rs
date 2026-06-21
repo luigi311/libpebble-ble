@@ -4,6 +4,7 @@
 //! well-known name (org.pebble_le.Daemon) so clients can find it and check
 //! liveness, opens the watch connection, and runs until signalled.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -12,11 +13,13 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod codec;
+mod db;
 mod notification;
 mod notify_monitor;
 mod service;
 mod supervisor;
 
+use db::HealthDb;
 use notify_monitor::NotificationMonitor;
 use service::{run_signal_emitter, BUS_NAME, OBJECT_PATH, PebbleDaemon};
 use supervisor::run_supervisor;
@@ -32,6 +35,23 @@ struct Cli {
     /// Enable verbose (TRACE-level) logging
     #[arg(short, long)]
     verbose: bool,
+    /// Path to the health data SQLite database
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+fn default_db_path() -> anyhow::Result<PathBuf> {
+    let base = if let Some(p) = std::env::var_os("XDG_DATA_HOME") {
+        PathBuf::from(p)
+    } else if let Some(p) = std::env::var_os("HOME") {
+        PathBuf::from(p).join(".local/share")
+    } else {
+        anyhow::bail!(
+            "neither XDG_DATA_HOME nor HOME is set; \
+             use --db to specify the health database path explicitly"
+        );
+    };
+    Ok(base.join("pebble-led/health.db"))
 }
 
 #[tokio::main]
@@ -44,6 +64,21 @@ async fn main() -> anyhow::Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
     };
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    let db_path = match cli.db {
+        Some(p) => p,
+        None => default_db_path()?,
+    };
+    let health_db = match HealthDb::open(&db_path) {
+        Ok(db) => {
+            info!("health DB opened at {}", db_path.display());
+            Some(db)
+        }
+        Err(e) => {
+            warn!("could not open health DB at {}: {e}", db_path.display());
+            None
+        }
+    };
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
@@ -62,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
     let conn_for_signals = conn.clone();
     let daemon_for_signals = daemon.clone();
     tokio::spawn(async move {
-        run_signal_emitter(conn_for_signals, daemon_for_signals, event_rx).await;
+        run_signal_emitter(conn_for_signals, daemon_for_signals, event_rx, health_db).await;
     });
 
     // Start the desktop notification monitor.

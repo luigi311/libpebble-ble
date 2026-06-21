@@ -58,8 +58,10 @@ pub struct DatalogData {
     pub app_uuid: [u8; 16],
     /// Unix timestamp when the session was opened on the watch.
     pub session_timestamp: u32,
-    /// Records still queued on the watch after this batch (0 = this is the last).
+    /// Records still queued on the watch after this batch (65535 = ongoing sentinel).
     pub items_left: u32,
+    /// CRC-32 of `data` as computed by the watch; use for deduplication on reconnect.
+    pub crc: u32,
     pub item_type: u8,
     pub item_size: u16,
     /// Raw record bytes. Contains `data.len() / item_size as usize` complete records.

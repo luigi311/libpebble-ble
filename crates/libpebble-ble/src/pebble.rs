@@ -747,7 +747,7 @@ fn on_datalog_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
             }
         }
         DATALOG_SENDDATA => {
-            let Some((items_left, _crc, record_bytes)) = datalog::parse_senddata(rest) else {
+            let Some((items_left, crc, record_bytes)) = datalog::parse_senddata(rest) else {
                 warn!("DataLog SENDDATA: failed to parse (handle={handle})");
                 return;
             };
@@ -758,6 +758,7 @@ fn on_datalog_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
                     app_uuid: s.app_uuid,
                     session_timestamp: s.opened_at,
                     items_left,
+                    crc,
                     item_type: s.item_type,
                     item_size: s.item_size,
                     data: record_bytes.to_vec(),

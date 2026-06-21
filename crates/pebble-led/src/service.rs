@@ -32,6 +32,8 @@ use std::{
 };
 
 use libpebble_ble::{AppMessageValue, DatalogData, Pebble};
+
+use crate::db::HealthDb;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use zbus::{
@@ -319,6 +321,7 @@ pub async fn run_signal_emitter(
     conn: Connection,
     _daemon: PebbleDaemon,
     mut event_rx: mpsc::UnboundedReceiver<DaemonEvent>,
+    health_db: Option<HealthDb>,
 ) {
     while let Some(event) = event_rx.recv().await {
         let iface_result = conn
@@ -349,6 +352,11 @@ pub async fn run_signal_emitter(
                 let _ = PebbleDaemon::nack_received(emitter, txn as u32).await;
             }
             DaemonEvent::HealthData(batch) => {
+                if let Some(db) = &health_db {
+                    if let Err(e) = db.insert_batch(&batch) {
+                        warn!("health DB insert failed: {e}");
+                    }
+                }
                 let _ = PebbleDaemon::health_data_received(
                     emitter,
                     batch.tag,
