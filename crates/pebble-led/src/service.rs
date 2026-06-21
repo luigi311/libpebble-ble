@@ -1,4 +1,4 @@
-//! The daemon: a zbus ServiceInterface wrapping one libpebble_ble::Pebble.
+//! D-Bus service interface (org.pebble_le.Daemon).
 //!
 //! Interface (org.pebble_le.Daemon on /org/pebble_le/Daemon):
 //!
@@ -13,6 +13,7 @@
 //!     UpdateTime()
 //!     Notify(s title, s body, s subtitle) -> u token
 //!     Ping() -> b
+//!     Scan(d timeout_secs) -> a(ss)
 //!
 //!   Signals
 //!     AppMessageReceived(s uuid, a{i(sv)} data)
@@ -20,25 +21,24 @@
 //!     NackReceived(u txn)
 //!     ConnectionChanged(b connected)
 //!
-//! AppMessage values cross the D-Bus hop as (tag: string, payload: variant).
-//! Tag is one of: u8 u16 u32 i8 i16 i32 uint int str bytes.
-//! This matches the pebble-le-proto Python package's codec so the Python
-//! client can talk to this Rust daemon without any changes.
+//! AppMessage values cross the D-Bus hop as (tag, payload) pairs; see codec.rs.
 
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
 
-use libpebble_ble::{AppMessageValue, NotificationCategory, Pebble};
+use libpebble_ble::{AppMessageValue, Pebble};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use zbus::{
     interface,
     object_server::SignalEmitter,
-    zvariant::{Array, OwnedValue, Str},
     Connection,
 };
+
+use crate::codec::{decode_wire_dict, encode_wire_dict, WireDict};
+use crate::notification::app_name_to_category;
 
 /// Custom D-Bus errors under the `org.pebble_le.Daemon` prefix.
 /// `NotConnected` lets the Python client's `_translate()` raise `NotConnectedError`
@@ -54,115 +54,7 @@ pub const BUS_NAME: &str = "org.pebble_le.Daemon";
 pub const OBJECT_PATH: &str = "/org/pebble_le/Daemon";
 
 // ---------------------------------------------------------------------------
-// Desktop app-name → notification category mapping
-// ---------------------------------------------------------------------------
-
-fn app_name_to_category(app_name: &str) -> NotificationCategory {
-    let lower = app_name.to_lowercase();
-    let lower = lower.trim();
-
-    if matches!(lower, "thunderbird" | "evolution" | "kmail" | "geary"
-        | "mutt" | "neomutt" | "protonmail" | "gmail" | "outlook"
-        | "apple mail" | "mail" | "fastmail" | "tutanota")
-    {
-        return NotificationCategory::Email;
-    }
-    if lower == "whatsapp" {
-        return NotificationCategory::WhatsApp;
-    }
-    if lower.contains("facebook messenger") || lower == "messenger" {
-        return NotificationCategory::FacebookMessenger;
-    }
-    if lower == "facebook" {
-        return NotificationCategory::Facebook;
-    }
-    if matches!(lower, "twitter" | "tweetbot" | "tweetdeck" | "birdsite") {
-        return NotificationCategory::Twitter;
-    }
-    if lower == "instagram" {
-        return NotificationCategory::Instagram;
-    }
-    if matches!(lower, "hangouts" | "google hangouts") {
-        return NotificationCategory::Hangouts;
-    }
-    if matches!(lower, "signal" | "telegram" | "discord" | "slack"
-        | "element" | "fractal" | "nheko" | "fluffychat" | "mattermost"
-        | "rocketchat" | "zulip" | "wire" | "viber" | "line"
-        | "skype" | "teams" | "microsoft teams" | "google chat"
-        | "messages" | "sms" | "kde connect" | "kdeconnect")
-    {
-        return NotificationCategory::Messaging;
-    }
-    NotificationCategory::Generic
-}
-
-// ---------------------------------------------------------------------------
-// Wire codec (matches Python pebble-le-proto codec.py)
-// ---------------------------------------------------------------------------
-
-/// (tag, payload) pair as it appears on the wire.
-type WireValue = (String, OwnedValue);
-type WireDict = HashMap<i32, WireValue>;
-
-fn decode_wire_dict(wire: WireDict) -> HashMap<u32, AppMessageValue> {
-    wire.into_iter().filter_map(|(k, (tag, val))| {
-        let k = u32::try_from(k).ok()?; // reject negative keys
-        let v = decode_wire_value(&tag, val)?;
-        Some((k, v))
-    }).collect()
-}
-
-fn decode_wire_value(tag: &str, val: OwnedValue) -> Option<AppMessageValue> {
-    match tag {
-        "u8"   => Some(AppMessageValue::U8(u32::try_from(val).ok()? as u8)),
-        "u16"  => Some(AppMessageValue::U16(u32::try_from(val).ok()? as u16)),
-        "u32"  => Some(AppMessageValue::U32(u32::try_from(val).ok()?)),
-        "i8"   => Some(AppMessageValue::I8(i32::try_from(val).ok()? as i8)),
-        "i16"  => Some(AppMessageValue::I16(i32::try_from(val).ok()? as i16)),
-        "i32"  => Some(AppMessageValue::I32(i32::try_from(val).ok()?)),
-        // Pebble AppMessage caps integers at 32 bits; uint/int widen to u64/i64
-        // on the Rust side but the wire value is always a 32-bit D-Bus integer.
-        "uint" => Some(AppMessageValue::Uint(u32::try_from(val).ok()? as u64)),
-        "int"  => Some(AppMessageValue::Int(i32::try_from(val).ok()? as i64)),
-        "str"  => Some(AppMessageValue::Str(String::try_from(val).ok()?)),
-        "bytes" => {
-            let arr = Array::try_from(val).ok()?;
-            let b: Vec<u8> = Vec::try_from(arr).ok()?;
-            Some(AppMessageValue::Bytes(b))
-        }
-        _ => None,
-    }
-}
-
-fn encode_wire_dict(data: &HashMap<u32, AppMessageValue>) -> WireDict {
-    data.iter().filter_map(|(k, v)| {
-        let k = i32::try_from(*k).ok()?; // reject keys >= 2^31
-        let (tag, owned) = encode_wire_value(v);
-        Some((k, (tag, owned)))
-    }).collect()
-}
-
-fn encode_wire_value(value: &AppMessageValue) -> (String, OwnedValue) {
-    match value {
-        AppMessageValue::U8(v)    => ("u8".into(),    OwnedValue::from(*v as u32)),
-        AppMessageValue::U16(v)   => ("u16".into(),   OwnedValue::from(*v as u32)),
-        AppMessageValue::U32(v)   => ("u32".into(),   OwnedValue::from(*v)),
-        AppMessageValue::I8(v)    => ("i8".into(),    OwnedValue::from(*v as i32)),
-        AppMessageValue::I16(v)   => ("i16".into(),   OwnedValue::from(*v as i32)),
-        AppMessageValue::I32(v)   => ("i32".into(),   OwnedValue::from(*v)),
-        // Pebble AppMessage caps integers at 32 bits; upper bits are dropped here.
-        AppMessageValue::Uint(v)  => ("uint".into(),  OwnedValue::from(*v as u32)),
-        AppMessageValue::Int(v)   => ("int".into(),   OwnedValue::from(*v as i32)),
-        AppMessageValue::Str(s)   => ("str".into(),   OwnedValue::from(Str::from(s.as_str()))),
-        AppMessageValue::Bytes(b) => {
-            let arr = Array::from(b.as_slice());
-            ("bytes".into(), OwnedValue::try_from(arr).expect("bytes encode"))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Daemon event → D-Bus signal bridge
+// Events (supervisor → signal emitter)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -174,7 +66,7 @@ pub enum DaemonEvent {
 }
 
 // ---------------------------------------------------------------------------
-// zbus interface
+// PebbleDaemon
 // ---------------------------------------------------------------------------
 
 struct DaemonState {
@@ -183,6 +75,9 @@ struct DaemonState {
     pebble: Option<Arc<Pebble>>,
     connected: bool,
     stopping: bool,
+    // Block unnamed senders (empty app_name) — system daemons and
+    // desktop-environment internals that don't set an app_name should
+    // not be forwarded to the watch.
     notify_blocklist: Vec<String>,
     event_tx: mpsc::UnboundedSender<DaemonEvent>,
 }
@@ -201,13 +96,14 @@ impl PebbleDaemon {
                 pebble: None,
                 connected: false,
                 stopping: false,
-                // Block unnamed senders (empty app_name) — system daemons and
-                // desktop-environment internals that don't set an app_name should
-                // not be forwarded to the watch.
                 notify_blocklist: vec!["".to_string()],
                 event_tx,
             })),
         }
+    }
+
+    pub(crate) fn event_tx(&self) -> mpsc::UnboundedSender<DaemonEvent> {
+        self.state.lock().unwrap().event_tx.clone()
     }
 
     fn require_pebble(&self) -> Result<Arc<Pebble>, DaemonError> {
@@ -218,7 +114,7 @@ impl PebbleDaemon {
         state.pebble.clone().ok_or_else(|| DaemonError::NotConnected("watch is not connected".into()))
     }
 
-    /// Called by the supervisor task when the watch connects.
+    /// Called by the supervisor when the watch connects.
     pub fn set_connected(&self, pebble: Arc<Pebble>) {
         let mut state = self.state.lock().unwrap();
         state.pebble = Some(pebble);
@@ -226,7 +122,7 @@ impl PebbleDaemon {
         let _ = state.event_tx.send(DaemonEvent::ConnectionChanged(true));
     }
 
-    /// Called by the supervisor task when the watch disconnects.
+    /// Called by the supervisor when the watch disconnects.
     pub fn set_disconnected(&self) {
         let mut state = self.state.lock().unwrap();
         state.connected = false;
@@ -267,17 +163,11 @@ impl PebbleDaemon {
             });
         }
     }
-
-    #[allow(dead_code)]
-    pub fn address(&self) -> String {
-        self.state.lock().unwrap().address.clone()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_connected(&self) -> bool {
-        self.state.lock().unwrap().connected
-    }
 }
+
+// ---------------------------------------------------------------------------
+// zbus interface
+// ---------------------------------------------------------------------------
 
 #[interface(name = "org.pebble_le.Daemon")]
 impl PebbleDaemon {
@@ -341,8 +231,6 @@ impl PebbleDaemon {
         true
     }
 
-    /// Scan for nearby Pebble watches. Returns a list of (address, name) pairs.
-    /// `timeout_secs` controls how long to scan; 10.0 is a reasonable default.
     async fn scan(&self, timeout_secs: f64) -> Result<Vec<(String, String)>, DaemonError> {
         let adapter = self.state.lock().unwrap().adapter.clone();
         Pebble::scan(&adapter, timeout_secs)
@@ -377,7 +265,7 @@ impl PebbleDaemon {
 // ---------------------------------------------------------------------------
 
 /// Processes `DaemonEvent`s from the reconnect supervisor and emits the
-/// corresponding D-Bus signals. Keeps the property `Connected` in sync.
+/// corresponding D-Bus signals. Keeps the `Connected` property in sync.
 pub async fn run_signal_emitter(
     conn: Connection,
     _daemon: PebbleDaemon,
@@ -399,7 +287,6 @@ pub async fn run_signal_emitter(
         match event {
             DaemonEvent::ConnectionChanged(c) => {
                 let _ = PebbleDaemon::connection_changed(emitter, c).await;
-                // Also emit property change notification.
                 let _ = iface.get().await.connected_changed(iface.signal_emitter()).await;
             }
             DaemonEvent::AppMessageReceived { uuid, data } => {
@@ -413,69 +300,5 @@ pub async fn run_signal_emitter(
                 let _ = PebbleDaemon::nack_received(emitter, txn as u32).await;
             }
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Reconnect supervisor
-// ---------------------------------------------------------------------------
-
-/// Keeps a live connection to the watch, reconnecting on drop with exponential
-/// backoff. Wires up libpebble-ble handlers to emit D-Bus signals.
-pub async fn run_supervisor(
-    daemon: PebbleDaemon,
-    address: String,
-    adapter: String,
-) {
-    let mut backoff = 2.0f64;
-
-    while !daemon.is_stopping() {
-        info!("connecting to watch {address} ...");
-        let pebble = Arc::new(Pebble::new(&address, &adapter));
-
-        // Wire handlers before connect so we catch any early events.
-        {
-            let event_tx = daemon.state.lock().unwrap().event_tx.clone();
-            let tx = event_tx.clone();
-            pebble.on_app_message(Arc::new(move |uuid, data| {
-                let _ = tx.send(DaemonEvent::AppMessageReceived { uuid, data });
-            }));
-            let tx = event_tx.clone();
-            pebble.on_ack(Arc::new(move |txn| {
-                let _ = tx.send(DaemonEvent::AckReceived(txn));
-            }));
-            let tx = event_tx.clone();
-            pebble.on_nack(Arc::new(move |txn| {
-                let _ = tx.send(DaemonEvent::NackReceived(txn));
-            }));
-        }
-
-        match pebble.connect().await {
-            Ok(()) => {
-                backoff = 2.0;
-                daemon.set_connected(Arc::clone(&pebble));
-                info!("watch connected; daemon ready");
-
-                if let Err(e) = pebble.update_time().await {
-                    warn!("time sync on connect failed: {e}");
-                }
-
-                pebble.wait_disconnected().await;
-                warn!("watch link went down");
-            }
-            Err(e) => {
-                warn!("connection attempt failed: {e}");
-            }
-        }
-
-        daemon.set_disconnected();
-        let _ = pebble.disconnect().await;
-
-        if daemon.is_stopping() {
-            break;
-        }
-        debug!("reconnecting in {backoff:.0}s");
-        tokio::time::sleep(std::time::Duration::from_secs_f64(backoff)).await;
-        backoff = (backoff * 2.0).min(30.0);
     }
 }

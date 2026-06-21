@@ -11,11 +11,15 @@ use tokio::{signal, signal::unix::SignalKind, sync::mpsc};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod codec;
+mod notification;
 mod notify_monitor;
 mod service;
+mod supervisor;
 
 use notify_monitor::NotificationMonitor;
-use service::{run_signal_emitter, run_supervisor, BUS_NAME, OBJECT_PATH, PebbleDaemon};
+use service::{run_signal_emitter, BUS_NAME, OBJECT_PATH, PebbleDaemon};
+use supervisor::run_supervisor;
 
 #[derive(Parser)]
 #[command(name = "pebble-led", about = "Long-lived daemon owning the Pebble BLE connection.")]
