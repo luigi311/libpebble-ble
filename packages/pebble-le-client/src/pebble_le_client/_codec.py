@@ -38,6 +38,12 @@ def encode_value(value: int | str | bytes | bytearray | Int) -> WireValue:
         if tag is None:  # pragma: no cover
             msg = f"unsupported Int width/sign: {value.width}/{value.signed}"
             raise ValueError(msg)
+        bits = value.width * 8
+        lo = -(1 << (bits - 1)) if value.signed else 0
+        hi = (1 << (bits - 1)) - 1 if value.signed else (1 << bits) - 1
+        if not (lo <= value.value <= hi):
+            msg = f"{tag} value {value.value!r} out of range [{lo}, {hi}]"
+            raise ValueError(msg)
         return tag, int(value.value)
     if isinstance(value, bool):
         msg = "bool is ambiguous; pass int or a width wrapper (u8/i16/…)"
@@ -47,7 +53,16 @@ def encode_value(value: int | str | bytes | bytearray | Int) -> WireValue:
     if isinstance(value, (bytes, bytearray)):
         return "bytes", bytes(value)
     if isinstance(value, int):
-        return ("int" if value < 0 else "uint"), value
+        # Pebble AppMessage caps plain integers at 32 bits on the wire.
+        if value < 0:
+            if value < -(1 << 31):
+                msg = f"int value {value!r} out of i32 range [-(2**31), 2**31-1]"
+                raise ValueError(msg)
+            return "int", value
+        if value > (1 << 32) - 1:
+            msg = f"uint value {value!r} out of u32 range [0, 2**32-1]"
+            raise ValueError(msg)
+        return "uint", value
     msg = f"unsupported AppMessage value type: {type(value)!r}"
     raise TypeError(msg)
 

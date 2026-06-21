@@ -544,7 +544,8 @@ impl Pebble {
         }
         let token = rand_u16();
         let now = Local::now().timestamp() as u32;
-        let payload = build_notification(title, body, subtitle, now, token, category);
+        let payload = build_notification(title, body, subtitle, now, token, category)
+            .map_err(|e| PebbleError::Other(e.to_string()))?;
         debug!("sending notification token={token} title={title:?} category={category:?}");
         self.send_pebble(Endpoint::BlobDb, &payload)?;
         Ok(token)
@@ -552,7 +553,8 @@ impl Pebble {
 
 
     fn send_pebble(&self, endpoint: Endpoint, payload: &[u8]) -> Result<(), PebbleError> {
-        let message = pebble_pack(endpoint, payload);
+        let message = pebble_pack(endpoint, payload)
+            .ok_or_else(|| PebbleError::Other("payload too large for Pebble Protocol".into()))?;
         let inner = self.inner.lock().unwrap();
         if let Some(srv) = &inner.gatt_server {
             srv.send(message);
@@ -573,18 +575,20 @@ fn on_pebble_message(message: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
 
     match Endpoint::from_u16(endpoint_raw) {
         Some(Endpoint::PhoneVersion) => {
-            let reply = pebble_pack(Endpoint::PhoneVersion, &build_phone_version_response());
-            if let Some(srv) = &inner.lock().unwrap().gatt_server {
-                srv.send(reply);
+            if let Some(reply) = pebble_pack(Endpoint::PhoneVersion, &build_phone_version_response()) {
+                if let Some(srv) = &inner.lock().unwrap().gatt_server {
+                    srv.send(reply);
+                }
             }
             debug!("watch requested phone version; replied");
         }
         Some(Endpoint::Ping) => {
             if let Some(cookie) = parse_ping(payload) {
                 debug!("ping cookie={cookie}; replying pong");
-                let reply = pebble_pack(Endpoint::Ping, &build_pong(cookie));
-                if let Some(srv) = &inner.lock().unwrap().gatt_server {
-                    srv.send(reply);
+                if let Some(reply) = pebble_pack(Endpoint::Ping, &build_pong(cookie)) {
+                    if let Some(srv) = &inner.lock().unwrap().gatt_server {
+                        srv.send(reply);
+                    }
                 }
             }
         }
@@ -613,8 +617,7 @@ fn on_app_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
         AppMessageCmd::Push => {
             if let (Some(uuid), Some(data)) = (parsed.app_uuid, parsed.data) {
                 // ACK the push.
-                let ack = pebble_pack(Endpoint::AppMessage, &build_app_message_ack(parsed.txn));
-                {
+                if let Some(ack) = pebble_pack(Endpoint::AppMessage, &build_app_message_ack(parsed.txn)) {
                     let inner_g = inner.lock().unwrap();
                     if let Some(srv) = &inner_g.gatt_server {
                         srv.send(ack);

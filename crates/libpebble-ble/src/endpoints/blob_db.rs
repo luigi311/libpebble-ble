@@ -49,16 +49,17 @@ impl BlobDBStatus {
     }
 }
 
-pub fn build_blobdb_insert(db: BlobDBId, key: &[u8; 16], blob: &[u8], token: u16) -> Vec<u8> {
+pub fn build_blobdb_insert(db: BlobDBId, key: &[u8; 16], blob: &[u8], token: u16) -> Result<Vec<u8>, &'static str> {
+    let blob_len = u16::try_from(blob.len()).map_err(|_| "BlobDB blob exceeds 65535 bytes")?;
     let mut out = Vec::new();
     out.push(BlobDBCommand::Insert as u8);
     out.extend_from_slice(&token.to_le_bytes());
     out.push(db as u8);
     out.push(16u8); // key length
     out.extend_from_slice(key);
-    out.extend_from_slice(&(blob.len() as u16).to_le_bytes());
+    out.extend_from_slice(&blob_len.to_le_bytes());
     out.extend_from_slice(blob);
-    out
+    Ok(out)
 }
 
 pub fn parse_blobdb_response(payload: &[u8]) -> Option<(u16, u8)> {
@@ -158,7 +159,7 @@ fn build_notification_blob(
     subtitle: &str,
     timestamp: u32,
     category: NotificationCategory,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, &'static str> {
     let parent_uuid = Uuid::parse_str(NOTIFICATIONS_APP_UUID).unwrap().into_bytes();
     let item_uuid = Uuid::new_v4().into_bytes();
 
@@ -167,8 +168,9 @@ fn build_notification_blob(
     for (attr_id, value) in [(1u8, title), (2u8, subtitle), (3u8, body)] {
         if !value.is_empty() {
             let raw = value.as_bytes();
+            let raw_len = u16::try_from(raw.len()).map_err(|_| "notification text attribute exceeds 65535 bytes")?;
             attrs.push(attr_id);
-            attrs.extend_from_slice(&(raw.len() as u16).to_le_bytes());
+            attrs.extend_from_slice(&raw_len.to_le_bytes());
             attrs.extend_from_slice(raw);
             attr_count += 1;
         }
@@ -184,6 +186,7 @@ fn build_notification_blob(
     attrs.push(category.background_color());
     attr_count += 1;
 
+    let attrs_len = u16::try_from(attrs.len()).map_err(|_| "notification attributes exceed 65535 bytes")?;
     let mut out = Vec::new();
     out.extend_from_slice(&item_uuid);
     out.extend_from_slice(&parent_uuid);
@@ -192,11 +195,11 @@ fn build_notification_blob(
     out.push(0x01); // type = notification
     out.extend_from_slice(&0x0001u16.to_le_bytes()); // flags
     out.push(0x04); // layout = notification
-    out.extend_from_slice(&(attrs.len() as u16).to_le_bytes());
+    out.extend_from_slice(&attrs_len.to_le_bytes());
     out.push(attr_count);
     out.push(0); // action count
     out.extend_from_slice(&attrs);
-    out
+    Ok(out)
 }
 
 pub fn build_notification(
@@ -206,8 +209,8 @@ pub fn build_notification(
     timestamp: u32,
     token: u16,
     category: NotificationCategory,
-) -> Vec<u8> {
-    let blob = build_notification_blob(title, body, subtitle, timestamp, category);
+) -> Result<Vec<u8>, &'static str> {
+    let blob = build_notification_blob(title, body, subtitle, timestamp, category)?;
     let key: [u8; 16] = Uuid::new_v4().into_bytes();
     build_blobdb_insert(BlobDBId::Notification, &key, &blob, token)
 }

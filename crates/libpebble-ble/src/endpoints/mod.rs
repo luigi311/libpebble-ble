@@ -46,12 +46,13 @@ impl Endpoint {
     }
 }
 
-pub fn pebble_pack(endpoint: Endpoint, payload: &[u8]) -> Vec<u8> {
+pub fn pebble_pack(endpoint: Endpoint, payload: &[u8]) -> Option<Vec<u8>> {
+    let len = u16::try_from(payload.len()).ok()?;
     let mut out = Vec::with_capacity(4 + payload.len());
-    out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(&(endpoint as u16).to_be_bytes());
     out.extend_from_slice(payload);
-    out
+    Some(out)
 }
 
 /// Returns `(endpoint_raw, payload)`. `endpoint_raw` is `u16` — callers map

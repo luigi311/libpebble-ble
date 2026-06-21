@@ -106,8 +106,9 @@ type WireDict = HashMap<i32, WireValue>;
 
 fn decode_wire_dict(wire: WireDict) -> HashMap<u32, AppMessageValue> {
     wire.into_iter().filter_map(|(k, (tag, val))| {
+        let k = u32::try_from(k).ok()?; // reject negative keys
         let v = decode_wire_value(&tag, val)?;
-        Some((k as u32, v))
+        Some((k, v))
     }).collect()
 }
 
@@ -119,6 +120,8 @@ fn decode_wire_value(tag: &str, val: OwnedValue) -> Option<AppMessageValue> {
         "i8"   => Some(AppMessageValue::I8(i32::try_from(val).ok()? as i8)),
         "i16"  => Some(AppMessageValue::I16(i32::try_from(val).ok()? as i16)),
         "i32"  => Some(AppMessageValue::I32(i32::try_from(val).ok()?)),
+        // Pebble AppMessage caps integers at 32 bits; uint/int widen to u64/i64
+        // on the Rust side but the wire value is always a 32-bit D-Bus integer.
         "uint" => Some(AppMessageValue::Uint(u32::try_from(val).ok()? as u64)),
         "int"  => Some(AppMessageValue::Int(i32::try_from(val).ok()? as i64)),
         "str"  => Some(AppMessageValue::Str(String::try_from(val).ok()?)),
@@ -132,9 +135,10 @@ fn decode_wire_value(tag: &str, val: OwnedValue) -> Option<AppMessageValue> {
 }
 
 fn encode_wire_dict(data: &HashMap<u32, AppMessageValue>) -> WireDict {
-    data.iter().map(|(k, v)| {
+    data.iter().filter_map(|(k, v)| {
+        let k = i32::try_from(*k).ok()?; // reject keys >= 2^31
         let (tag, owned) = encode_wire_value(v);
-        (*k as i32, (tag, owned))
+        Some((k, (tag, owned)))
     }).collect()
 }
 
@@ -146,6 +150,7 @@ fn encode_wire_value(value: &AppMessageValue) -> (String, OwnedValue) {
         AppMessageValue::I8(v)    => ("i8".into(),    OwnedValue::from(*v as i32)),
         AppMessageValue::I16(v)   => ("i16".into(),   OwnedValue::from(*v as i32)),
         AppMessageValue::I32(v)   => ("i32".into(),   OwnedValue::from(*v)),
+        // Pebble AppMessage caps integers at 32 bits; upper bits are dropped here.
         AppMessageValue::Uint(v)  => ("uint".into(),  OwnedValue::from(*v as u32)),
         AppMessageValue::Int(v)   => ("int".into(),   OwnedValue::from(*v as i32)),
         AppMessageValue::Str(s)   => ("str".into(),   OwnedValue::from(Str::from(s.as_str()))),
