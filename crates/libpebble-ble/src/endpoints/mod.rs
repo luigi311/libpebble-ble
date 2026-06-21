@@ -8,6 +8,8 @@
 pub mod app_message;
 pub mod app_run_state;
 pub mod blob_db;
+pub mod datalog;
+pub mod health;
 pub mod phone_version;
 pub mod ping;
 pub mod time;
@@ -25,9 +27,15 @@ pub enum Endpoint {
     SystemMessage = 18,
     AppMessage = 48,
     AppRunState = 52,
+    /// Health sync trigger — phone sends request, watch replies with ACK then
+    /// streams records via the DataLog endpoint.
+    HealthSync = 911,
     BlobDb = 0xB1DB,
     Ping = 2001,
     AppFetch = 6001,
+    /// Watch-initiated logging sessions (health, analytics). Sessions are opened,
+    /// data is streamed, then closed. We ACK each message.
+    DataLog = 6778, // 0x1A7A — not 0x6778 (26488)
 }
 
 impl Endpoint {
@@ -38,9 +46,11 @@ impl Endpoint {
             18 => Some(Self::SystemMessage),
             48 => Some(Self::AppMessage),
             52 => Some(Self::AppRunState),
+            911 => Some(Self::HealthSync),
             0xB1DB => Some(Self::BlobDb),
             2001 => Some(Self::Ping),
             6001 => Some(Self::AppFetch),
+            6778 => Some(Self::DataLog),
             _ => None,
         }
     }

@@ -18,6 +18,8 @@ pub enum BlobDBId {
     Reminder = 3,
     Notification = 4,
     Weather = 5,
+    CannedMessages = 6,
+    Preferences = 7,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +59,22 @@ pub fn build_blobdb_insert(db: BlobDBId, key: &[u8; 16], blob: &[u8], token: u16
     out.push(db as u8);
     out.push(16u8); // key length
     out.extend_from_slice(key);
+    out.extend_from_slice(&blob_len.to_le_bytes());
+    out.extend_from_slice(blob);
+    Ok(out)
+}
+
+/// Like `build_blobdb_insert` but with an arbitrary byte-string key (e.g. "activityPreferences").
+pub fn build_blobdb_str_insert(db: BlobDBId, key: &str, blob: &[u8], token: u16) -> Result<Vec<u8>, &'static str> {
+    let key_bytes = key.as_bytes();
+    let key_len = u8::try_from(key_bytes.len()).map_err(|_| "BlobDB string key exceeds 255 bytes")?;
+    let blob_len = u16::try_from(blob.len()).map_err(|_| "BlobDB blob exceeds 65535 bytes")?;
+    let mut out = Vec::new();
+    out.push(BlobDBCommand::Insert as u8);
+    out.extend_from_slice(&token.to_le_bytes());
+    out.push(db as u8);
+    out.push(key_len);
+    out.extend_from_slice(key_bytes);
     out.extend_from_slice(&blob_len.to_le_bytes());
     out.extend_from_slice(blob);
     Ok(out)

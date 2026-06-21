@@ -34,7 +34,15 @@ use crate::{
             AppMessageValue,
         },
         app_run_state::{build_app_run_state, AppRunStateCmd},
-        blob_db::{build_notification, parse_blobdb_response, BlobDBStatus, NotificationCategory},
+        blob_db::{
+            build_blobdb_str_insert, build_notification, parse_blobdb_response, BlobDBId,
+            BlobDBStatus, NotificationCategory,
+        },
+        datalog::{
+            self, build_reply, build_report_sessions, DatalogData, DatalogSession,
+            DATALOG_CLOSE, DATALOG_OPENSESSION, DATALOG_SENDDATA, DATALOG_TIMEOUT,
+        },
+        health::{build_activate_health_blob, build_health_sync_request, build_hrm_blob},
         phone_version::build_phone_version_response,
         ping::{build_pong, parse_ping},
         time::build_set_utc,
@@ -55,16 +63,20 @@ pub type AppMessageHandler =
     Arc<dyn Fn(String, HashMap<u32, AppMessageValue>) + Send + Sync + 'static>;
 pub type AckHandler = Arc<dyn Fn(u8) + Send + Sync + 'static>;
 pub type NackHandler = Arc<dyn Fn(u8) + Send + Sync + 'static>;
+pub type HealthDataHandler = Arc<dyn Fn(DatalogData) + Send + Sync + 'static>;
 
 struct PebbleInner {
     app_message_handlers: Vec<AppMessageHandler>,
     ack_handlers: Vec<AckHandler>,
     nack_handlers: Vec<NackHandler>,
+    health_handlers: Vec<HealthDataHandler>,
     /// transaction_id → future resolved when watch ACK/NACKs it
     pending: HashMap<u8, oneshot::Sender<bool>>,
     txn: u8,
     /// Handle to the GATT server send channel (set once server is started).
     gatt_server: Option<PebbleGattServerHandle>,
+    /// Open DataLog sessions keyed by the 1-byte handle from the watch.
+    datalog_sessions: HashMap<u8, DatalogSession>,
 }
 
 impl PebbleInner {
@@ -73,9 +85,11 @@ impl PebbleInner {
             app_message_handlers: Vec::new(),
             ack_handlers: Vec::new(),
             nack_handlers: Vec::new(),
+            health_handlers: Vec::new(),
             pending: HashMap::new(),
             txn: 0,
             gatt_server: None,
+            datalog_sessions: HashMap::new(),
         }
     }
 }
@@ -146,6 +160,10 @@ impl Pebble {
         self.inner.lock().unwrap().nack_handlers.push(handler);
     }
 
+    pub fn on_health(&self, handler: HealthDataHandler) {
+        self.inner.lock().unwrap().health_handlers.push(handler);
+    }
+
     // ---- liveness ----
 
     pub fn is_connected(&self) -> bool {
@@ -212,6 +230,7 @@ impl Pebble {
                     let pending: Vec<(u8, oneshot::Sender<bool>)> =
                         inner.pending.drain().collect();
                     let nack_handlers = inner.nack_handlers.clone();
+                    inner.datalog_sessions.clear();
                     (pending, nack_handlers)
                 };
                 for (txn, sender) in pending {
@@ -561,6 +580,46 @@ impl Pebble {
     }
 
 
+    /// Write "activityPreferences" (and optionally "hrmPreferences") to the
+    /// BlobDB PREFERENCES store, then trigger a DataLog sync from the watch.
+    pub async fn activate_health(
+        &self,
+        height_cm: u16,
+        weight_kg: u16,
+        age: u8,
+        gender: u8,
+        hrm_enabled: bool,
+    ) -> Result<(), PebbleError> {
+        if !self.is_connected() {
+            return Err(PebbleError::NotConnected);
+        }
+        let token = rand_u16();
+        let blob = build_activate_health_blob(height_cm, weight_kg, age, gender);
+        let payload = build_blobdb_str_insert(BlobDBId::Preferences, "activityPreferences", &blob, token)
+            .map_err(|e| PebbleError::Other(e.to_string()))?;
+        self.send_pebble(Endpoint::BlobDb, &payload)?;
+
+        let hrm_token = rand_u16();
+        let hrm_blob = build_hrm_blob(hrm_enabled);
+        let hrm_payload = build_blobdb_str_insert(BlobDBId::Preferences, "hrmPreferences", &hrm_blob, hrm_token)
+            .map_err(|e| PebbleError::Other(e.to_string()))?;
+        self.send_pebble(Endpoint::BlobDb, &hrm_payload)?;
+
+        debug!("health preferences written; triggering sync");
+        self.fetch_health_data()
+    }
+
+    /// Ask the watch to flush pending health records via DataLog sessions.
+    pub fn fetch_health_data(&self) -> Result<(), PebbleError> {
+        if !self.is_connected() {
+            return Err(PebbleError::NotConnected);
+        }
+        // REPORTSESSIONS prompts the watch to open DataLog sessions for pending data.
+        self.send_pebble(Endpoint::DataLog, &build_report_sessions())?;
+        // HealthSync request additionally triggers a full flush.
+        self.send_pebble(Endpoint::HealthSync, &build_health_sync_request())
+    }
+
     fn send_pebble(&self, endpoint: Endpoint, payload: &[u8]) -> Result<(), PebbleError> {
         let message = pebble_pack(endpoint, payload)
             .ok_or_else(|| PebbleError::Other("payload too large for Pebble Protocol".into()))?;
@@ -603,6 +662,12 @@ fn on_pebble_message(message: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
         }
         Some(Endpoint::AppMessage) => {
             on_app_message(payload.to_vec(), inner);
+        }
+        Some(Endpoint::DataLog) => {
+            on_datalog_message(payload.to_vec(), inner);
+        }
+        Some(Endpoint::HealthSync) => {
+            debug!("health sync ACK from watch");
         }
         Some(Endpoint::BlobDb) => {
             if let Some((token, status)) = parse_blobdb_response(payload) {
@@ -654,6 +719,95 @@ fn on_app_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
             for h in handlers {
                 h(parsed.txn);
             }
+        }
+    }
+}
+
+fn on_datalog_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
+    let Some((cmd, handle, rest)) = datalog::parse_header(&payload) else {
+        return;
+    };
+
+    match cmd {
+        DATALOG_OPENSESSION => {
+            let Some(session) = datalog::parse_opensession(handle, rest) else {
+                warn!("DataLog OPENSESSION: failed to parse (handle={handle})");
+                return;
+            };
+            debug!(
+                "DataLog OPENSESSION handle={handle} tag={} item_size={}",
+                session.tag, session.item_size
+            );
+            inner.lock().unwrap().datalog_sessions.insert(handle, session);
+            let ack = pebble_pack(Endpoint::DataLog, &build_reply(handle, true));
+            if let Some(pkt) = ack {
+                if let Some(srv) = &inner.lock().unwrap().gatt_server {
+                    srv.send(pkt);
+                }
+            }
+        }
+        DATALOG_SENDDATA => {
+            let Some((items_left, crc, record_bytes)) = datalog::parse_senddata(rest) else {
+                warn!("DataLog SENDDATA: failed to parse (handle={handle})");
+                return;
+            };
+            let batch = {
+                let guard = inner.lock().unwrap();
+                guard.datalog_sessions.get(&handle).map(|s| DatalogData {
+                    tag: s.tag,
+                    app_uuid: s.app_uuid,
+                    session_timestamp: s.opened_at,
+                    items_left,
+                    crc,
+                    item_type: s.item_type,
+                    item_size: s.item_size,
+                    data: record_bytes.to_vec(),
+                })
+            };
+            if let Some(batch) = batch {
+                debug!(
+                    "DataLog SENDDATA handle={handle} tag={} bytes={} items_left={items_left}",
+                    batch.tag,
+                    batch.data.len()
+                );
+                // ACK before dispatching to handlers so protocol latency is not
+                // gated on callback processing time.
+                let ack = pebble_pack(Endpoint::DataLog, &build_reply(handle, true));
+                if let Some(pkt) = ack {
+                    if let Some(srv) = &inner.lock().unwrap().gatt_server {
+                        srv.send(pkt);
+                    }
+                }
+                let handlers: Vec<_> = inner.lock().unwrap().health_handlers.clone();
+                for h in handlers {
+                    h(batch.clone());
+                }
+            } else {
+                warn!("DataLog SENDDATA for unknown session handle={handle}; sending NACK");
+                let nack = pebble_pack(Endpoint::DataLog, &build_reply(handle, false));
+                if let Some(pkt) = nack {
+                    if let Some(srv) = &inner.lock().unwrap().gatt_server {
+                        srv.send(pkt);
+                    }
+                }
+            }
+        }
+        DATALOG_CLOSE => {
+            debug!("DataLog CLOSE handle={handle}");
+            inner.lock().unwrap().datalog_sessions.remove(&handle);
+            let ack = pebble_pack(Endpoint::DataLog, &build_reply(handle, true));
+            if let Some(pkt) = ack {
+                if let Some(srv) = &inner.lock().unwrap().gatt_server {
+                    srv.send(pkt);
+                }
+            }
+        }
+        DATALOG_TIMEOUT => {
+            debug!("DataLog TIMEOUT handle={handle}");
+            inner.lock().unwrap().datalog_sessions.remove(&handle);
+        }
+        _ => {
+            debug!("DataLog unknown cmd={cmd:#04x} handle={handle}");
         }
     }
 }

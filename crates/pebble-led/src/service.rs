@@ -14,12 +14,15 @@
 //!     Notify(s title, s body, s subtitle) -> u token
 //!     Ping() -> b
 //!     Scan(d timeout_secs) -> a(ss)
+//!     ActivateHealth(q height_cm, q weight_kg, y age, y gender, b hrm_enabled)
+//!     FetchHealthData()
 //!
 //!   Signals
 //!     AppMessageReceived(s uuid, a{i(sv)} data)
 //!     AckReceived(u txn)
 //!     NackReceived(u txn)
 //!     ConnectionChanged(b connected)
+//!     HealthDataReceived(u tag, ay app_uuid, u session_timestamp, u items_left, u crc, y item_type, q item_size, ay data)
 //!
 //! AppMessage values cross the D-Bus hop as (tag, payload) pairs; see codec.rs.
 
@@ -28,7 +31,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use libpebble_ble::{AppMessageValue, Pebble};
+use libpebble_ble::{AppMessageValue, DatalogData, Pebble};
+
+use crate::db::HealthDb;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use zbus::{
@@ -63,6 +68,7 @@ pub enum DaemonEvent {
     AppMessageReceived { uuid: String, data: HashMap<u32, AppMessageValue> },
     AckReceived(u8),
     NackReceived(u8),
+    HealthData(DatalogData),
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +244,32 @@ impl PebbleDaemon {
             .map_err(|e| DaemonError::Failed(e.to_string()))
     }
 
+    /// Write health user profile to the watch and trigger a DataLog sync.
+    /// gender: 0 = male, 1 = female.
+    async fn activate_health(
+        &self,
+        height_cm: u16,
+        weight_kg: u16,
+        age: u8,
+        gender: u8,
+        hrm_enabled: bool,
+    ) -> Result<(), DaemonError> {
+        if gender > 1 {
+            return Err(DaemonError::Failed(format!("invalid gender={gender}; must be 0 (male) or 1 (female)")));
+        }
+        let pebble = self.require_pebble()?;
+        pebble
+            .activate_health(height_cm, weight_kg, age, gender, hrm_enabled)
+            .await
+            .map_err(|e| DaemonError::Failed(e.to_string()))
+    }
+
+    /// Ask the watch to flush pending health records via DataLog sessions.
+    fn fetch_health_data(&self) -> Result<(), DaemonError> {
+        let pebble = self.require_pebble()?;
+        pebble.fetch_health_data().map_err(|e| DaemonError::Failed(e.to_string()))
+    }
+
     // ---- Signals ----
 
     #[zbus(signal)]
@@ -258,6 +290,25 @@ impl PebbleDaemon {
         signal_emitter: &SignalEmitter<'_>,
         connected: bool,
     ) -> zbus::Result<()>;
+
+    /// Emitted for each batch of health records received from the watch.
+    /// tag: data type (81=steps, 83=sleep, 84=activity sessions, 85=HR).
+    /// app_uuid: 16 bytes (all-zeros for health sessions).
+    /// item_size: bytes per record in `data`.
+    /// items_left: records still queued on the watch after this batch.
+    /// crc: CRC-32 of `data` as computed by the watch; use for deduplication on reconnect.
+    #[zbus(signal)]
+    pub async fn health_data_received(
+        signal_emitter: &SignalEmitter<'_>,
+        tag: u32,
+        app_uuid: Vec<u8>,
+        session_timestamp: u32,
+        items_left: u32,
+        crc: u32,
+        item_type: u8,
+        item_size: u16,
+        data: Vec<u8>,
+    ) -> zbus::Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +321,7 @@ pub async fn run_signal_emitter(
     conn: Connection,
     _daemon: PebbleDaemon,
     mut event_rx: mpsc::UnboundedReceiver<DaemonEvent>,
+    health_db: Option<HealthDb>,
 ) {
     while let Some(event) = event_rx.recv().await {
         let iface_result = conn
@@ -298,6 +350,25 @@ pub async fn run_signal_emitter(
             }
             DaemonEvent::NackReceived(txn) => {
                 let _ = PebbleDaemon::nack_received(emitter, txn as u32).await;
+            }
+            DaemonEvent::HealthData(batch) => {
+                if let Some(db) = &health_db {
+                    if let Err(e) = db.insert_batch(&batch) {
+                        warn!("health DB insert failed: {e}");
+                    }
+                }
+                let _ = PebbleDaemon::health_data_received(
+                    emitter,
+                    batch.tag,
+                    batch.app_uuid.to_vec(),
+                    batch.session_timestamp,
+                    batch.items_left,
+                    batch.crc,
+                    batch.item_type,
+                    batch.item_size,
+                    batch.data,
+                )
+                .await;
             }
         }
     }
