@@ -8,21 +8,44 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # needed to upload assets to a release
+  contents: write
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  # ── Rust daemon .deb ────────────────────────────────────────────────────────
+  build-deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+
+    runs-on: ${{ matrix.runner }}
+
     steps:
       - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-cargo-
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            debhelper dh-python pybuild-plugin-pyproject \
-            build-essential \
-            python3-all python3-hatchling devscripts
+            debhelper devscripts \
+            pkg-config libexpat-dev build-essential
 
       - name: Verify tag matches changelog version
         if: github.event_name == 'release'
@@ -35,21 +58,52 @@ jobs:
             exit 1
           fi
 
-      - name: Build the .deb
+      - name: Build .deb
         run: |
-          dpkg-buildpackage -us -uc -b
+          # -d skips the apt build-dep check; cargo/rustc are satisfied by
+          # the rustup toolchain installed above, not the apt packages.
+          dpkg-buildpackage -us -uc -b -d
           mkdir -p dist
-          mv ../pebble-led_*_all.deb dist/
+          mv ../pebble-led_*_${{ matrix.arch }}.deb dist/
 
-      - name: Upload build artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pebble-led-deb
+          name: pebble-led-deb-${{ matrix.arch }}
           path: dist/*.deb
           if-no-files-found: error
 
-      - name: Attach .deb to the release
+      - name: Attach .deb to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.deb
+
+  # ── Python client wheel (architecture-independent) ──────────────────────────
+  build-python:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build wheel
+        run: |
+          pip install build
+          python -m build packages/pebble-le-client --outdir dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pebble-le-client-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+
+      - name: Attach wheel to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.whl

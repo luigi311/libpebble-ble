@@ -1,55 +1,81 @@
 # pebble-le
 
-Talk to a Pebble smartwatch over Bluetooth Low Energy from Linux — as a library,
-a long-lived daemon, and a client other apps use.
+Talk to a Pebble smartwatch over Bluetooth Low Energy from Linux — as a Rust
+library, a long-lived Rust daemon, and a Python client other apps use.
 
-This is a `uv` workspace of four packages. The split exists because the watch
-hardware gives you exactly **one** BLE link, so exactly one process can own it.
-That process is the daemon; everything else talks to the daemon.
+The watch gives you exactly **one** BLE link, so exactly one process can own
+it. That process is the daemon; everything else talks to the daemon over D-Bus.
 
-## The four packages
+## Components
 
 ```
-libpebble-ble        the BLE/protocol library. Owns bleak, the PPoGATT GATT
-                     server, pairing, AppMessage. Knows nothing about D-Bus-as-
-                     IPC, the daemon, or clients. Usable standalone.
-        ↑
-pebble-le-proto      the daemon<->client CONTRACT: bus name, object path,
-                     interface name, and the value codec that lets a width-
-                     pinned int (u16/i8/...) survive the D-Bus hop. One copy,
-                     imported by both ends, so it can't drift.
-        ↑                              ↑
-pebble-led           the daemon.       pebble-le-client   the client.
-imports proto +      Owns the single   imports proto.     Re-exposes
-libpebble-ble.       Pebble link,      libpebble_ble's API (the on_app_message
-Exports the D-Bus    answers pings,    decorator, the {0:"hi", 1:u16(150)} dict)
-interface.           reconnects.       over D-Bus, hiding all of it.
+crates/libpebble-ble   Rust BLE/protocol library. Owns BlueZ (via bluer),
+                       the PPoGATT GATT server, pairing, AppMessage, and all
+                       endpoint codecs. Knows nothing about D-Bus or the daemon.
+          ↑
+crates/pebble-led      Rust daemon. Wraps one libpebble-ble Pebble instance,
+                       exports org.pebble_le.Daemon on the session bus, handles
+                       reconnection, forwards desktop notifications to the watch.
+          ↑
+packages/              Python client. pebble-le-client is the only Python
+pebble-le-client       package; it wraps the D-Bus proxy behind the same API
+                       libpebble-ble exposes (same decorators, same AppMessage
+                       dict, same u8/u16/u32/i8/i16/i32 width wrappers).
 ```
 
-The dependency arrows only point up. The library never learns the daemon
-exists; the client never opens a BLE link. The package boundaries are the walls;
-the repo is just where the walls live.
+The library never learns the daemon exists. The client never opens a BLE link.
+
+## Rust library structure
+
+```
+crates/libpebble-ble/src/
+  pebble.rs            High-level Pebble struct: connect lifecycle, endpoint
+                       dispatch, AppMessage API, scan.
+
+  transport/           BLE transport layer.
+    agent.rs           BlueZ auto-accept pairing agent (registered during
+                       first-time bonding; only accepts the configured address).
+    gatt_server.rs     Phone-hosted PPoGATT GATT server (BlueZ peripheral).
+                       The watch connects back to this as a GATT client.
+    ppogatt.rs         PPoGATT framing, windowed sequence numbers, reassembly.
+
+  endpoints/           One file per Pebble Protocol endpoint.
+    mod.rs             Endpoint enum, pebble_pack/pebble_unpack framing.
+    app_message.rs     AppMessage PUSH/ACK/NACK encode and decode (endpoint 48).
+    app_run_state.rs   Launch/stop watchapps (endpoint 52).
+    blob_db.rs         BlobDB inserts and notification builder (endpoint 0xb1db).
+    phone_version.rs   Phone capability advertisement (endpoint 17).
+    ping.rs            Ping/Pong (endpoint 2001).
+    time.rs            UTC clock sync (endpoint 11).
+
+  error.rs             PebbleError.
+  uuids.rs             All Pebble and PPoGATT GATT UUIDs.
+```
+
+Adding a new endpoint: create `endpoints/<name>.rs`, add it to
+`endpoints/mod.rs`, and add a match arm in `pebble.rs::on_pebble_message`.
 
 ## Liveness — two independent questions
 
 * **Is the daemon process alive?** Its well-known bus name (`org.pebble_le.Daemon`)
-  has an owner. The client checks this with `NameHasOwner` — no socket connect,
-  no timeout, no stale pidfile. `PebbleClient.is_daemon_running()`.
+  has an owner. `PebbleClient.is_daemon_running()` checks this with
+  `NameHasOwner` — no socket connect, no timeout, no stale pidfile.
 * **Is the watch reachable?** The daemon's `Connected` property +
   `ConnectionChanged` signal. `PebbleClient.connected` / `is_connected()`.
 
-A daemon can be running fine while the watch is out of range, so apps need both.
+A daemon can be alive while the watch is out of range; apps need to check both.
 
 ## Quick start
 
-Run the daemon (owns the link, syncs time, forwards notifications — all
-independent of any app):
+Run the daemon (owns the BLE link, syncs time, forwards desktop notifications):
 
 ```sh
 pebble-led E6:94:0A:D4:D5:DC
+pebble-led --verbose E6:94:0A:D4:D5:DC   # TRACE-level logging
+pebble-led --adapter hci1 E6:94:0A:D4:D5:DC  # non-default adapter
 ```
 
-Any app then talks to it without touching BLE or D-Bus:
+Any Python app talks to it without touching BLE or D-Bus:
 
 ```python
 import asyncio
@@ -70,55 +96,86 @@ async def main():
 asyncio.run(main())
 ```
 
-Note the call site is identical to using `libpebble_ble.Pebble` directly — same
-decorator, same dict, same width wrappers. That symmetry is deliberate.
+## Building
 
+```sh
+# Build everything (Rust)
+cargo build --release
+
+# Run tests
+cargo test
+
+# Build and run the daemon directly
+cargo run --bin pebble-led -- E6:94:0A:D4:D5:DC
+
+# Python client: install dependencies and run tests
+uv sync --all-packages
+uv run pytest
+```
 
 ## Installing the daemon
 
-Grab the latest `.deb` from [Releases](../../releases) and install it. Its
-dependencies (bleak, dbus-fast, loguru, bluez) come from your distro — the
-package bundles only the three Python modules:
-
 ```sh
-sudo apt install ./pebble-led_*_all.deb
+# Build the release binary
+cargo build --release
+
+# Copy the binary somewhere on your PATH
+sudo install -m755 target/release/pebble-led /usr/local/bin/
+
+# Or build the .deb (requires cargo-deb or debhelper setup)
+dpkg-buildpackage -us -uc -b
+sudo apt install ./pebble-led_*_*.deb
 ```
 
 ### Configure the daemon
 
-Tell it your watch's address. The unit reads this from a per-user env file
-rather than baking it in, so the package is the same for everyone:
+The systemd unit reads the watch address from a per-user env file:
 
 ```sh
 mkdir -p ~/.config/pebble-led
 echo 'PEBBLE_ADDRESS=E6:94:0A:D4:D5:DC' > ~/.config/pebble-led/env
 ```
 
-Start it. It runs as a **user** service, not a system one — the notification
-monitor eavesdrops on your *session* bus, which only exists inside your login,
-so a root system service would never see your notifications:
+Start as a user service (must be a user service — the notification monitor
+connects to your session D-Bus, which only exists inside your login):
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user start pebble-led.service
+systemctl --user enable --now pebble-led.service
 ```
 
-Enable it to start at login and keep running after logout / across reboots:
+### Platform notes
 
-```sh
-systemctl --user enable pebble-led.service
-```
+* **dbus-broker systems**: The notification monitor uses `BecomeMonitor` 
+  (the dbus-broker-compatible API) and falls back to `eavesdrop=true`
+  AddMatch on older `dbus-daemon` installs.
 
-### Troubleshooting
+* **BlueZ `AccessDenied`**: add yourself to the `bluetooth` group and start a
+  fresh session: `sudo usermod -aG bluetooth "$USER"`, then log out and back in.
 
-* **BlueZ calls fail with `AccessDenied`** — add yourself to the `bluetooth`
-  group and start a fresh session: `sudo usermod -aG bluetooth "$USER"`, then
-  log out and back in.
-* **Notification monitor warns about the session bus at startup** — the daemon
-  started before your desktop session bus was ready. Harmless if started by
-  hand (your session's already up); the `graphical-session.target` ordering in
-  the unit handles it for login/boot starts.
+## D-Bus interface (`org.pebble_le.Daemon`)
 
+Object path: `/org/pebble_le/Daemon` — session bus.
+
+| Kind | Name | Signature | Notes |
+|------|------|-----------|-------|
+| Property | `Connected` | `b` | watch BLE link is up |
+| Property | `WatchAddress` | `s` | configured watch address |
+| Method | `SendAppMessage` | `(s, a{i(sv)}, b) → u` | uuid, data, wait_ack → txn |
+| Method | `LaunchApp` | `(s)` | uuid |
+| Method | `StopApp` | `(s)` | uuid |
+| Method | `UpdateTime` | `()` | sync watch clock to system time |
+| Method | `Notify` | `(s, s, s) → u` | title, body, subtitle → token |
+| Method | `Ping` | `() → b` | daemon liveness probe |
+| Method | `Scan` | `(d) → a(ss)` | timeout\_secs → [(address, name)] |
+| Signal | `AppMessageReceived` | `(s, a{i(sv)})` | uuid, data |
+| Signal | `AckReceived` | `(u)` | txn |
+| Signal | `NackReceived` | `(u)` | txn |
+| Signal | `ConnectionChanged` | `(b)` | connected |
+
+AppMessage values cross D-Bus as `(tag, variant)` pairs where tag is one of
+`u8 u16 u32 i8 i16 i32 uint int str bytes`. The Python client handles all
+marshalling transparently.
 
 ## Supported features
 
@@ -159,6 +216,6 @@ systemctl --user enable pebble-led.service
 
 ## Why one repo
 
-The client and daemon **must** agree on the wire contract. A monorepo makes a
-contract change one atomic commit that CI runs across both ends — there's never
-a window where they disagree.
+The daemon and Python client must agree on the D-Bus wire contract (bus name,
+object path, interface name, AppMessage value encoding). A monorepo makes a
+contract change one atomic commit that covers both ends at once.

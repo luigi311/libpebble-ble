@@ -292,13 +292,16 @@ fn handle_ppogatt_in(
             pump_tx(state, notify_tx);
         }
         c if c == PPoGATTType::Data as u8 => {
-            let ack = vec![ppogatt_header(PPoGATTType::Ack, serial)];
-            send_raw(ack, notify_tx);
             if let Some(messages) = state.session.on_data(serial, body) {
+                // In-order packet: ACK it and deliver.
+                let ack = vec![ppogatt_header(PPoGATTType::Ack, serial)];
+                send_raw(ack, notify_tx);
                 for msg in messages {
                     on_data(msg);
                 }
             }
+            // Out-of-order: no ACK. Watch times out and retransmits the
+            // missed packet, which restores ordering naturally.
         }
         other => {
             debug!("PPoGATT unknown command {other} ignored");

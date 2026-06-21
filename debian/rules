@@ -1,26 +1,21 @@
 #!/usr/bin/make -f
 
-export PYBUILD_NAME=pebble-led
-export DEB_PYTHON_INSTALL_LAYOUT=deb
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 %:
-	dh $@ --with python3 --buildsystem=pybuild
+	dh $@
 
-# pybuild expects one package at the repo root, but we have three under
-# packages/. Build and install each into dist-packages in dependency order
-# (pebble_le_proto -> libpebble_ble -> pebble_led). --no-deps because the
-# runtime deps come from the distro packages declared in debian/control.
 override_dh_auto_build:
-	# nothing to compile; pure Python. Build happens at install time below.
+	cargo build --release --bin pebble-led
 
 override_dh_auto_install:
-	set -e; \
-	for pkg in libpebble-ble pebble-le-proto pebble-led; do \
-		pip3 install --no-deps --no-build-isolation \
-			--root=debian/pebble-led \
-			--prefix=/usr \
-			packages/$$pkg; \
-	done
+	install -Dm755 target/release/pebble-led \
+		debian/pebble-led/usr/bin/pebble-led
+	install -Dm644 data/pebble-led.service \
+		debian/pebble-led/usr/lib/systemd/user/pebble-led.service
 
 override_dh_auto_test:
-	# skip tests during package build (run them separately in CI)
+	: # tests require a live BlueZ/D-Bus session; run separately in CI
+
+override_dh_auto_clean:
+	cargo clean || true
