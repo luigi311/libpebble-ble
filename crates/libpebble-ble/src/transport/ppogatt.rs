@@ -13,8 +13,16 @@
 //!   request carried a payload, else {0x03}. The 0x19 bytes advertise our
 //!   rx/tx window sizes (25 packets each).
 //!   ACK header: (serial << 3) | 1.
+//!
+//! RX windowing:
+//!   The watch sends up to PPOGATT_WINDOW packets without waiting for ACKs.
+//!   We buffer ahead-of-sequence packets (serial within the window but beyond
+//!   rx_seq) so that when the gap fills we can deliver the whole run and send
+//!   one cumulative ACK rather than forcing per-packet retransmits.
 
-/// Window size we advertise in the reset reply and honor on our TX side.
+use std::collections::HashMap;
+
+/// Window size we advertise in the reset reply and honor on both TX and RX.
 pub const PPOGATT_WINDOW: u8 = 0x19;
 
 /// Drop the reassembly buffer if it grows beyond this (framing desync).
@@ -57,20 +65,29 @@ pub fn parse_ppogatt_header(byte: u8) -> (u8, u8) {
 /// packet, take a serial from `next_tx_seq()`, and feed every inbound ACK
 /// to `on_ack()`.
 ///
-/// RX dedup: we track the expected inbound 5-bit serial. Out-of-sequence
-/// DATA (a retransmit whose ACK we already sent) must still be ACKed but
-/// NOT appended to the reassembly buffer.
+/// RX windowing: we buffer ahead-of-sequence packets (within the window)
+/// so that when the missing serial arrives we can deliver the whole run
+/// and ACK the highest consecutive serial in one go.
 pub struct PPoGATTSession {
     pub tx_seq: u8,
     pub tx_ack_seq: u8,
     pub tx_inflight: u8,
     pub rx_seq: u8,
     reassembly: Vec<u8>,
+    /// Packets received out-of-order but within the window, keyed by serial.
+    rx_buffer: HashMap<u8, Vec<u8>>,
 }
 
 impl PPoGATTSession {
     pub fn new() -> Self {
-        Self { tx_seq: 0, tx_ack_seq: 0, tx_inflight: 0, rx_seq: 0, reassembly: Vec::new() }
+        Self {
+            tx_seq: 0,
+            tx_ack_seq: 0,
+            tx_inflight: 0,
+            rx_seq: 0,
+            reassembly: Vec::new(),
+            rx_buffer: HashMap::new(),
+        }
     }
 
     pub fn reset(&mut self) {
@@ -79,6 +96,7 @@ impl PPoGATTSession {
         self.tx_inflight = 0;
         self.rx_seq = 0;
         self.reassembly.clear();
+        self.rx_buffer.clear();
     }
 
     // ---- TX side ----
@@ -103,20 +121,44 @@ impl PPoGATTSession {
     }
 
     // ---- RX side ----
-    /// Feed one inbound DATA packet. Returns `None` if the packet was a
-    /// duplicate/out-of-order and must be dropped (after ACKing). Otherwise
-    /// returns the list of complete Pebble Protocol messages available.
+    /// Feed one inbound DATA packet.
+    ///
+    /// Returns `Some(messages)` when one or more complete Pebble Protocol
+    /// messages are now available (in-order delivery or a gap just filled).
+    /// The caller must ACK `rx_seq - 1` (the highest consecutive serial).
+    ///
+    /// Returns `None` when the packet was buffered (ahead-of-sequence within
+    /// the window) or is a duplicate (behind rx_seq). No ACK should be sent
+    /// for buffered packets; duplicates can be ignored since we already ACKed.
     pub fn on_data(&mut self, serial: u8, body: &[u8]) -> Option<Vec<Vec<u8>>> {
-        if serial != self.rx_seq {
-            tracing::warn!(
-                "PPoGATT DATA serial={serial}, expected {} — dropping (dup/out-of-order)",
+        // 5-bit distance from expected: 0 = in-order, 1..window-1 = ahead, window.. = behind.
+        let diff = serial.wrapping_sub(self.rx_seq) & 0x1F;
+
+        if diff == 0 {
+            // In-order: consume this packet then drain any buffered followers.
+            self.rx_seq = (self.rx_seq + 1) & 0x1F;
+            self.reassembly.extend_from_slice(body);
+            while let Some(buffered) = self.rx_buffer.remove(&self.rx_seq) {
+                self.rx_seq = (self.rx_seq + 1) & 0x1F;
+                self.reassembly.extend_from_slice(&buffered);
+            }
+            Some(self.drain())
+        } else if diff < PPOGATT_WINDOW {
+            // Ahead-of-sequence but within the window: buffer for later.
+            tracing::trace!(
+                "PPoGATT DATA serial={serial} buffered (expected {}, diff={diff})",
                 self.rx_seq
             );
-            return None;
+            self.rx_buffer.insert(serial, body.to_vec());
+            None
+        } else {
+            // Behind rx_seq: duplicate we already ACKed. Safe to ignore.
+            tracing::warn!(
+                "PPoGATT DATA serial={serial} duplicate (expected {}), ignoring",
+                self.rx_seq
+            );
+            None
         }
-        self.rx_seq = (self.rx_seq + 1) & 0x1F;
-        self.reassembly.extend_from_slice(body);
-        Some(self.drain())
     }
 
     fn drain(&mut self) -> Vec<Vec<u8>> {

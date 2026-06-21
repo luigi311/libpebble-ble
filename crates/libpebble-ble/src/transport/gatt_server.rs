@@ -293,15 +293,17 @@ fn handle_ppogatt_in(
         }
         c if c == PPoGATTType::Data as u8 => {
             if let Some(messages) = state.session.on_data(serial, body) {
-                // In-order packet: ACK it and deliver.
-                let ack = vec![ppogatt_header(PPoGATTType::Ack, serial)];
+                // ACK the highest consecutive serial received (rx_seq - 1).
+                // This may be higher than the incoming serial when buffered
+                // ahead-of-sequence packets were also consumed.
+                let ack_serial = state.session.rx_seq.wrapping_sub(1) & 0x1F;
+                let ack = vec![ppogatt_header(PPoGATTType::Ack, ack_serial)];
                 send_raw(ack, notify_tx);
                 for msg in messages {
                     on_data(msg);
                 }
             }
-            // Out-of-order: no ACK. Watch times out and retransmits the
-            // missed packet, which restores ordering naturally.
+            // Buffered (ahead-of-sequence) or duplicate: no ACK needed.
         }
         other => {
             debug!("PPoGATT unknown command {other} ignored");
