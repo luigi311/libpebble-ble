@@ -138,9 +138,9 @@ impl HealthDb {
              --   u32 duration_secs
              --   [if version >= 3 and session_type is walk(5) or run(6):]
              --   u16 steps
-             --   u16 resting_kcal
              --   u16 active_kcal
-             --   u16 distance_cm
+             --   u16 resting_kcal
+             --   u16 distance_m
              CREATE TABLE IF NOT EXISTS health_activity_sessions (
                  id               INTEGER PRIMARY KEY,
                  health_record_id INTEGER NOT NULL REFERENCES health_records(id),
@@ -150,9 +150,9 @@ impl HealthDb {
                  start_ts         INTEGER NOT NULL,
                  duration_secs    INTEGER NOT NULL,
                  steps            INTEGER,
-                 resting_kcal     INTEGER,
                  active_kcal      INTEGER,
-                 distance_cm      INTEGER,
+                 resting_kcal     INTEGER,
+                 distance_m       INTEGER,
                  raw              BLOB    NOT NULL,
                  UNIQUE(start_ts, session_type)
              );
@@ -394,7 +394,7 @@ impl HealthDb {
     /// Base (18 bytes): u16 version, u16 skip, u16 session_type, u32 utc_offset,
     ///   u32 start_ts, u32 duration_secs.
     /// Walk/run extension (version >= 3, session_type 5 or 6, 8 extra bytes):
-    ///   u16 steps, u16 resting_kcal, u16 active_kcal, u16 distance_cm.
+    ///   u16 steps, u16 active_kcal, u16 resting_kcal, u16 distance_m.
     fn insert_activity_sessions(
         &self,
         record_id: i64,
@@ -418,7 +418,7 @@ impl HealthDb {
         let mut stmt = self.conn.prepare_cached(
             "INSERT OR IGNORE INTO health_activity_sessions
                  (health_record_id, record_version, session_type, utc_offset, start_ts,
-                  duration_secs, steps, resting_kcal, active_kcal, distance_cm, raw)
+                  duration_secs, steps, active_kcal, resting_kcal, distance_m, raw)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
 
@@ -431,13 +431,13 @@ impl HealthDb {
             let duration = u32::from_le_bytes([item[14], item[15], item[16], item[17]]) as i64;
 
             let is_walk_run = session_type == 5 || session_type == 6;
-            let (steps, resting_kcal, active_kcal, distance_cm) =
+            let (steps, active_kcal, resting_kcal, distance_m) =
                 if version >= 3 && is_walk_run && item_size >= WALK_RUN_ITEM {
                     let s = u16::from_le_bytes([item[18], item[19]]) as i64;
-                    let r = u16::from_le_bytes([item[20], item[21]]) as i64;
-                    let a = u16::from_le_bytes([item[22], item[23]]) as i64;
+                    let a = u16::from_le_bytes([item[20], item[21]]) as i64;
+                    let r = u16::from_le_bytes([item[22], item[23]]) as i64;
                     let d = u16::from_le_bytes([item[24], item[25]]) as i64;
-                    (Some(s), Some(r), Some(a), Some(d))
+                    (Some(s), Some(a), Some(r), Some(d))
                 } else {
                     (None, None, None, None)
                 };
@@ -450,9 +450,9 @@ impl HealthDb {
                 start_ts,
                 duration,
                 steps,
-                resting_kcal,
                 active_kcal,
-                distance_cm,
+                resting_kcal,
+                distance_m,
                 &item[..item_size],
             ])?;
         }
