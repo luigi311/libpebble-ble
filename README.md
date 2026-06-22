@@ -218,9 +218,9 @@ consume raw records without reading the database directly.
   - [ ] Actions 
   - [x] Categorization (Text/Call/Other)
 - [ ] Weather
-- [x] Health
+- [ ] Health
   - [x] Steps
-  - [x] Sleep
+  - [ ] Sleep
   - [x] Heartrate
 - [ ] Music
   - [ ] Playing status
