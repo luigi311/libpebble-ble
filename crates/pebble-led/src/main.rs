@@ -1,8 +1,9 @@
-//! Daemon entry point: `pebble-led <WATCH_ADDRESS>`.
+//! Daemon entry point.
 //!
-//! Acquires the session bus, exports the PebbleDaemon interface, requests the
-//! well-known name (org.pebble_le.Daemon) so clients can find it and check
-//! liveness, opens the watch connection, and runs until signalled.
+//! Reads `$XDG_CONFIG_HOME/pebble-led/config.toml` (or the path given by
+//! `--config`), acquires the session D-Bus, exports the PebbleDaemon interface,
+//! requests the well-known name (org.pebble_le.Daemon), opens the watch
+//! connection, and runs until signalled.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod codec;
+mod config;
 mod db;
 mod notification;
 mod notify_monitor;
@@ -27,28 +29,23 @@ use supervisor::run_supervisor;
 #[derive(Parser)]
 #[command(name = "pebble-led", about = "Long-lived daemon owning the Pebble BLE connection.")]
 struct Cli {
-    /// Watch Bluetooth address, e.g. E6:94:0A:D4:D5:DC
-    address: String,
-    /// HCI adapter name
-    #[arg(long, default_value = "hci0")]
-    adapter: String,
-    /// Enable verbose (TRACE-level) logging
+    /// Path to config file (default: $XDG_CONFIG_HOME/pebble-led/config.toml)
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// Enable verbose (TRACE-level) logging (overrides config)
     #[arg(short, long)]
     verbose: bool,
-    /// Path to the health data SQLite database
-    #[arg(long)]
-    db: Option<PathBuf>,
 }
 
 fn default_db_path() -> anyhow::Result<PathBuf> {
-    let base = if let Some(p) = std::env::var_os("XDG_DATA_HOME") {
+    let base = if let Some(p) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
         PathBuf::from(p)
-    } else if let Some(p) = std::env::var_os("HOME") {
+    } else if let Some(p) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
         PathBuf::from(p).join(".local/share")
     } else {
         anyhow::bail!(
             "neither XDG_DATA_HOME nor HOME is set; \
-             use --db to specify the health database path explicitly"
+             set db in config to specify the health database path explicitly"
         );
     };
     Ok(base.join("pebble-led/health.db"))
@@ -58,14 +55,23 @@ fn default_db_path() -> anyhow::Result<PathBuf> {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let filter = if cli.verbose {
+    let config_path = match cli.config {
+        Some(p) => p,
+        None => config::default_config_path()?,
+    };
+    let cfg = config::load(&config_path)?;
+
+    let verbose = cli.verbose || cfg.verbose;
+    let filter = if verbose {
         EnvFilter::new("trace")
     } else {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
     };
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    let db_path = match cli.db {
+    info!("loaded config from {}", config_path.display());
+
+    let db_path = match cfg.db {
         Some(p) => p,
         None => default_db_path()?,
     };
@@ -82,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-    let daemon = PebbleDaemon::new(cli.address.clone(), cli.adapter.clone(), event_tx);
+    let daemon = PebbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), event_tx);
 
     // Build the session D-Bus connection.
     let conn = zbus::connection::Builder::session()?
@@ -112,8 +118,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Start the reconnect supervisor in the background.
     let daemon_for_super = daemon.clone();
-    let address = cli.address.clone();
-    let adapter = cli.adapter.clone();
+    let address = cfg.address.clone();
+    let adapter = cfg.adapter.clone();
     tokio::spawn(async move {
         run_supervisor(daemon_for_super, address, adapter).await;
     });
