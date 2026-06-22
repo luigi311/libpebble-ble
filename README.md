@@ -67,12 +67,26 @@ A daemon can be alive while the watch is out of range; apps need to check both.
 
 ## Quick start
 
+Create the config file first (required — the daemon will not start without it).
+The path follows the XDG Base Directory spec: `$XDG_CONFIG_HOME/pebble-led/config.toml`,
+which defaults to `~/.config/pebble-led/config.toml` when `XDG_CONFIG_HOME` is not set.
+
+```sh
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/pebble-led"
+cat > "${XDG_CONFIG_HOME:-$HOME/.config}/pebble-led/config.toml" << 'EOF'
+address = "E6:94:0A:D4:D5:DC"   # your watch Bluetooth address
+# adapter = "hci0"               # optional, default is hci0
+# verbose = false                 # optional, or use -v at runtime
+# db = "/custom/path/health.db"  # optional, default is XDG_DATA_HOME/pebble-led/health.db
+EOF
+```
+
 Run the daemon (owns the BLE link, syncs time, forwards desktop notifications):
 
 ```sh
-pebble-led E6:94:0A:D4:D5:DC
-pebble-led --verbose E6:94:0A:D4:D5:DC   # TRACE-level logging
-pebble-led --adapter hci1 E6:94:0A:D4:D5:DC  # non-default adapter
+pebble-led                          # reads ~/.config/pebble-led/config.toml
+pebble-led --verbose                # TRACE-level logging (overrides config)
+pebble-led --config /other/path.toml  # use a different config file
 ```
 
 Any Python app talks to it without touching BLE or D-Bus:
@@ -105,8 +119,8 @@ cargo build --release
 # Run tests
 cargo test
 
-# Build and run the daemon directly
-cargo run --bin pebble-led -- E6:94:0A:D4:D5:DC
+# Build and run the daemon directly (config file must exist first)
+cargo run --bin pebble-led
 
 # Python client: install dependencies and run tests
 uv sync --all-packages
@@ -129,11 +143,17 @@ sudo apt install ./pebble-led_*_*.deb
 
 ### Configure the daemon
 
-The systemd unit reads the watch address from a per-user env file:
+Create `$XDG_CONFIG_HOME/pebble-led/config.toml` before enabling the service
+(defaults to `~/.config/pebble-led/config.toml` when `XDG_CONFIG_HOME` is not
+set). The systemd unit checks for this file and will not start (or enter a
+restart loop) if it is absent.
 
-```sh
-mkdir -p ~/.config/pebble-led
-echo 'PEBBLE_ADDRESS=E6:94:0A:D4:D5:DC' > ~/.config/pebble-led/env
+```toml
+# $XDG_CONFIG_HOME/pebble-led/config.toml
+address = "E6:94:0A:D4:D5:DC"   # required — your watch Bluetooth address
+# adapter = "hci0"               # optional, default hci0
+# verbose = false                 # optional
+# db = "/custom/path/health.db"  # optional, default XDG_DATA_HOME/pebble-led/health.db
 ```
 
 Start as a user service (must be a user service — the notification monitor
@@ -168,14 +188,22 @@ Object path: `/org/pebble_le/Daemon` — session bus.
 | Method | `Notify` | `(s, s, s) → u` | title, body, subtitle → token |
 | Method | `Ping` | `() → b` | daemon liveness probe |
 | Method | `Scan` | `(d) → a(ss)` | timeout\_secs → [(address, name)] |
+| Method | `ActivateHealth` | `(q, q, y, y, b)` | height\_cm, weight\_kg, age, gender (0=male 1=female), hrm\_enabled |
+| Method | `FetchHealthData` | `()` | flush pending health records from watch |
 | Signal | `AppMessageReceived` | `(s, a{i(sv)})` | uuid, data |
 | Signal | `AckReceived` | `(u)` | txn |
 | Signal | `NackReceived` | `(u)` | txn |
 | Signal | `ConnectionChanged` | `(b)` | connected |
+| Signal | `HealthDataReceived` | `(u, ay, u, u, u, y, q, ay)` | tag, app\_uuid, session\_timestamp, items\_left, crc, item\_type, item\_size, data |
 
 AppMessage values cross D-Bus as `(tag, variant)` pairs where tag is one of
 `u8 u16 u32 i8 i16 i32 uint int str bytes`. The Python client handles all
 marshalling transparently.
+
+Health data is stored automatically in SQLite at
+`$XDG_DATA_HOME/pebble-led/health.db` (or the path set in `config.toml`).
+The `HealthDataReceived` signal fires for each batch so external tools can
+consume raw records without reading the database directly.
 
 ## Supported features
 
