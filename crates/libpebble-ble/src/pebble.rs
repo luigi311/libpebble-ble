@@ -311,24 +311,62 @@ impl Pebble {
             }
         }
 
-        // 8. Monitor device events for disconnect.
+        // 8. Monitor device events for disconnect, with a keepalive poll fallback.
         let connected_tx = Arc::clone(&self.connected_tx);
-        let addr = address;
         tokio::spawn(async move {
-            if let Ok(mut events) = device.events().await {
-                while let Some(event) = events.next().await {
-                    if let bluer::DeviceEvent::PropertyChanged(
-                        bluer::DeviceProperty::Connected(false),
-                    ) = event
-                    {
-                        warn!("BlueZ reports device Connected=False; watch dropped");
-                        let _ = connected_tx.send(false);
-                        break;
+            match device.events().await {
+                Err(e) => {
+                    warn!("could not subscribe to device events: {e}; falling back to keepalive polling");
+                    let mut poll = tokio::time::interval(Duration::from_secs(60));
+                    poll.tick().await; // skip the immediate first tick
+                    loop {
+                        poll.tick().await;
+                        match device.is_connected().await {
+                            Ok(false) | Err(_) => {
+                                warn!("keepalive: device not connected; triggering disconnect");
+                                let _ = connected_tx.send(false);
+                                return;
+                            }
+                            Ok(true) => {}
+                        }
+                    }
+                }
+                Ok(mut events) => {
+                    let mut poll = tokio::time::interval(Duration::from_secs(60));
+                    poll.tick().await; // skip the immediate first tick
+                    loop {
+                        tokio::select! {
+                            event = events.next() => match event {
+                                Some(bluer::DeviceEvent::PropertyChanged(
+                                    bluer::DeviceProperty::Connected(false),
+                                )) => {
+                                    warn!("BlueZ reports device Connected=False; watch dropped");
+                                    let _ = connected_tx.send(false);
+                                    return;
+                                }
+                                None => {
+                                    // BlueZ removed the device from its cache rather than
+                                    // emitting Connected=False — treat as disconnect.
+                                    warn!("device event stream ended; triggering disconnect");
+                                    let _ = connected_tx.send(false);
+                                    return;
+                                }
+                                _ => {}
+                            },
+                            _ = poll.tick() => {
+                                match device.is_connected().await {
+                                    Ok(false) | Err(_) => {
+                                        warn!("keepalive: device not connected; triggering disconnect");
+                                        let _ = connected_tx.send(false);
+                                        return;
+                                    }
+                                    Ok(true) => {}
+                                }
+                            }
+                        }
                     }
                 }
             }
-            // Keep device alive for duration of monitoring.
-            let _ = addr;
         });
 
         let _ = self.connected_tx.send(true);
