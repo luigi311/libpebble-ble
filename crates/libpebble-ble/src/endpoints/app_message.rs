@@ -6,12 +6,9 @@ use uuid::Uuid;
 #[repr(u8)]
 pub enum AppMessageCmd {
     Push = 0x01,
-    Ack = 0x02,
-    Nack = 0x03,
+    Ack = 0xFF,
+    Nack = 0x7F,
 }
-
-const APPMESSAGE_ACK_ALT: u8 = 0xFF;
-const APPMESSAGE_NACK_ALT: u8 = 0x7F;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -167,18 +164,10 @@ pub fn parse_app_message(payload: &[u8]) -> Option<ParsedAppMessage> {
     let raw_cmd = payload[0];
     let txn = payload[1];
 
-    // Alternate high-bit ACK/NACK encoding (0xff/0x7f).
-    if raw_cmd == APPMESSAGE_ACK_ALT {
-        return Some(ParsedAppMessage { cmd: AppMessageCmd::Ack, txn, app_uuid: None, data: None });
-    }
-    if raw_cmd == APPMESSAGE_NACK_ALT {
-        return Some(ParsedAppMessage { cmd: AppMessageCmd::Nack, txn, app_uuid: None, data: None });
-    }
-
     let cmd = match raw_cmd {
         0x01 => AppMessageCmd::Push,
-        0x02 => AppMessageCmd::Ack,
-        0x03 => AppMessageCmd::Nack,
+        0xFF => AppMessageCmd::Ack,
+        0x7F => AppMessageCmd::Nack,
         _ => return None,
     };
 
