@@ -43,13 +43,20 @@ crates/libpebble-ble/src/
     mod.rs             Endpoint enum, pebble_pack/pebble_unpack framing.
     app_message.rs     AppMessage PUSH/ACK/NACK encode and decode (endpoint 48).
     app_run_state.rs   Launch/stop watchapps (endpoint 52).
-    blob_db.rs         BlobDB inserts and notification builder (endpoint 0xb1db).
+    blob_db.rs         BlobDB inserts, notification builder, weather blobs,
+                       and BlobDB2 bidirectional sync protocol (endpoints
+                       0xb1db / 0xb2db).
+    datalog.rs         DataLog session protocol — used by health data sync
+                       (endpoint 0x11).
+    health.rs          Health activation blobs (activityPreferences, HRM)
+                       and HealthSync request (endpoint 0x8351).
     phone_version.rs   Phone capability advertisement (endpoint 17).
     ping.rs            Ping/Pong (endpoint 2001).
     time.rs            UTC clock sync (endpoint 11).
 
   error.rs             PebbleError.
-  uuids.rs             All Pebble and PPoGATT GATT UUIDs.
+  uuids.rs             All Pebble and PPoGATT GATT UUIDs, plus system app
+                       UUIDs (weather, health, notifications, etc.).
 ```
 
 Adding a new endpoint: create `endpoints/<name>.rs`, add it to
@@ -190,6 +197,7 @@ Object path: `/org/pebble_le/Daemon` — session bus.
 | Method | `Scan` | `(d) → a(ss)` | timeout\_secs → [(address, name)] |
 | Method | `ActivateHealth` | `(q, q, y, y, b)` | height\_cm, weight\_kg, age, gender (0=male 1=female), hrm\_enabled |
 | Method | `FetchHealthData` | `()` | flush pending health records from watch |
+| Method | `PushWeather` | `(ay, s, s, n, y, n, n, y, n, n, b)` | location\_key (16 bytes), location\_name, forecast\_short, current\_temp\_c, current\_weather, today\_high\_c, today\_low\_c, tomorrow\_weather, tomorrow\_high\_c, tomorrow\_low\_c, is\_current\_location. Weather types: 0=PartlyCloudy 1=CloudyDay 2=LightSnow 3=LightRain 4=HeavyRain 5=HeavySnow 6=Generic 7=Sun 8=RainAndSnow |
 | Signal | `AppMessageReceived` | `(s, a{i(sv)})` | uuid, data |
 | Signal | `AckReceived` | `(u)` | txn |
 | Signal | `NackReceived` | `(u)` | txn |
@@ -217,7 +225,7 @@ consume raw records without reading the database directly.
   - [x] Send
   - [ ] Actions 
   - [x] Categorization (Text/Call/Other)
-- [ ] Weather
+- [x] Weather
 - [ ] Health
   - [x] Steps
   - [ ] Sleep
