@@ -713,6 +713,7 @@ dependencies = [
  "chrono",
  "dbus",
  "futures",
+ "iana-time-zone",
  "thiserror",
  "tokio",
  "tracing",

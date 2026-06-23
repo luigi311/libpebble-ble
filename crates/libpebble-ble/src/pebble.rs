@@ -577,7 +577,8 @@ impl Pebble {
         let now = Local::now();
         let utc_ts = now.timestamp() as u32;
         let offset_minutes = (now.offset().local_minus_utc() / 60) as i16;
-        let tz_name = now.format("%Z").to_string();
+        let tz_name = iana_time_zone::get_timezone()
+            .unwrap_or_else(|_| now.format("%Z").to_string());
         debug!("setting watch time: utc={utc_ts} offset={offset_minutes}min tz={tz_name:?}");
         self.send_pebble(Endpoint::Time, &build_set_utc(utc_ts, offset_minutes, &tz_name))
     }
