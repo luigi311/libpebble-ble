@@ -37,8 +37,9 @@ use crate::{
         blob_db::{
             build_blobdb2_mark_all_dirty, build_blobdb2_syncdone_response,
             build_blobdb2_version, build_blobdb2_write_response, build_blobdb2_writeback_response,
-            build_blobdb_str_insert, build_notification, parse_blobdb2_incoming,
-            parse_blobdb_response, BlobDB2Incoming, BlobDBId, BlobDBStatus, NotificationCategory,
+            build_blobdb_insert, build_blobdb_insert_with_timestamp, build_blobdb_str_insert, build_notification,
+            build_weather_blob, build_weather_prefs_blob, parse_blobdb2_incoming, parse_blobdb_response,
+            BlobDB2Incoming, BlobDBId, BlobDBStatus, NotificationCategory, WeatherType,
             BLOBDB2_DB_WATCH_PREFS,
         },
         datalog::{
@@ -84,6 +85,8 @@ struct PebbleInner {
     gatt_server: Option<PebbleGattServerHandle>,
     /// Open DataLog sessions keyed by the 1-byte handle from the watch.
     datalog_sessions: HashMap<u8, DatalogSession>,
+    /// BlobDB2 protocol version negotiated at connect time (0 = v0/unknown, 1+ = InsertWithTimestamp capable).
+    blob_db_version: u8,
 }
 
 impl PebbleInner {
@@ -99,6 +102,7 @@ impl PebbleInner {
             txn: 0,
             gatt_server: None,
             datalog_sessions: HashMap::new(),
+            blob_db_version: 0,
         }
     }
 }
@@ -328,12 +332,13 @@ impl Pebble {
         // 8. BlobDB2 version handshake — determines whether to use InsertWithTimestamp
         //    and triggers the watch to sync its preferences back to us.
         let blob_db_version = self.negotiate_blobdb2_version().await;
+        self.inner.lock().unwrap().blob_db_version = blob_db_version;
         if blob_db_version >= 1 {
             let _ = self.send_pebble(
                 Endpoint::BlobDbV2,
-                &build_blobdb2_mark_all_dirty(rand_u16(), BlobDBId::Preferences),
+                &build_blobdb2_mark_all_dirty(rand_u16(), BlobDBId::WatchPrefs),
             );
-            debug!("BlobDB2 v{blob_db_version}: MarkAllDirty sent for Preferences");
+            debug!("BlobDB2 v{blob_db_version}: MarkAllDirty sent for WatchPrefs");
         }
 
         // 9. Monitor device events for disconnect, with a keepalive poll fallback.
@@ -665,6 +670,71 @@ impl Pebble {
     }
 
 
+    /// Push weather data to the Pebble built-in weather app via BlobDB.
+    ///
+    /// Uses `InsertWithTimestamp` (cmd=0x0D) when BlobDB2 v1 was negotiated at
+    /// connect time, and falls back to plain `Insert` otherwise. Temperatures
+    /// are in Celsius.
+    ///
+    /// `location_key` is a 16-byte UUID that identifies the weather location.
+    /// Re-using the same UUID on subsequent calls updates the existing entry.
+    pub async fn push_weather(
+        &self,
+        location_key: &[u8; 16],
+        location_name: &str,
+        forecast_short: &str,
+        current_temp: i16,
+        current_weather: WeatherType,
+        today_high: i16,
+        today_low: i16,
+        tomorrow_weather: WeatherType,
+        tomorrow_high: i16,
+        tomorrow_low: i16,
+        is_current_location: bool,
+    ) -> Result<(), PebbleError> {
+        if !self.is_connected() {
+            return Err(PebbleError::NotConnected);
+        }
+        let now = chrono::Local::now().timestamp() as u32;
+        let blob = build_weather_blob(
+            location_name,
+            forecast_short,
+            current_temp,
+            current_weather,
+            today_high,
+            today_low,
+            tomorrow_weather,
+            tomorrow_high,
+            tomorrow_low,
+            now,
+            is_current_location,
+        );
+        let token = rand_u16();
+        let blob_db_version = self.inner.lock().unwrap().blob_db_version;
+        let payload = if blob_db_version >= 1 {
+            build_blobdb_insert_with_timestamp(BlobDBId::Weather, location_key, &blob, now, token)
+        } else {
+            build_blobdb_insert(BlobDBId::Weather, location_key, &blob, token)
+        }
+        .map_err(|e| PebbleError::Other(e.to_string()))?;
+        debug!(
+            "push_weather token={token} location={location_name:?} \
+             temp={current_temp}°C blobdb_version={blob_db_version}"
+        );
+        self.send_pebble(Endpoint::BlobDb, &payload)?;
+
+        // Write the "weatherApp" AppConfigs entry so the watch knows which
+        // location UUIDs are active. Without this the weather app shows
+        // "no location information" even though the Weather BlobDB insert succeeds.
+        let prefs_token = rand_u16();
+        let prefs_blob = build_weather_prefs_blob(&[*location_key]);
+        let prefs_payload =
+            build_blobdb_str_insert(BlobDBId::AppConfigs, "weatherApp", &prefs_blob, prefs_token)
+                .map_err(|e| PebbleError::Other(e.to_string()))?;
+        debug!("push_weather prefs token={prefs_token}");
+        self.send_pebble(Endpoint::BlobDb, &prefs_payload)
+    }
+
     /// Write "activityPreferences" (and optionally "hrmPreferences") to the
     /// BlobDB PREFERENCES store, then trigger a DataLog sync from the watch.
     pub async fn activate_health(
@@ -680,13 +750,13 @@ impl Pebble {
         }
         let token = rand_u16();
         let blob = build_activate_health_blob(height_cm, weight_kg, age, gender);
-        let payload = build_blobdb_str_insert(BlobDBId::Preferences, "activityPreferences", &blob, token)
+        let payload = build_blobdb_str_insert(BlobDBId::HealthParams, "activityPreferences", &blob, token)
             .map_err(|e| PebbleError::Other(e.to_string()))?;
         self.send_pebble(Endpoint::BlobDb, &payload)?;
 
         let hrm_token = rand_u16();
         let hrm_blob = build_hrm_blob(hrm_enabled);
-        let hrm_payload = build_blobdb_str_insert(BlobDBId::Preferences, "hrmPreferences", &hrm_blob, hrm_token)
+        let hrm_payload = build_blobdb_str_insert(BlobDBId::HealthParams, "hrmPreferences", &hrm_blob, hrm_token)
             .map_err(|e| PebbleError::Other(e.to_string()))?;
         self.send_pebble(Endpoint::BlobDb, &hrm_payload)?;
 

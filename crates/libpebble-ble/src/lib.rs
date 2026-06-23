@@ -11,8 +11,8 @@ mod pebble;
 
 pub use endpoints::app_message::AppMessageValue;
 pub use endpoints::app_run_state::AppRunStateCmd;
-pub use endpoints::blob_db::NotificationCategory;
+pub use endpoints::blob_db::{NotificationCategory, WeatherType};
 pub use endpoints::datalog::DatalogData;
 pub use endpoints::Endpoint;
 pub use error::PebbleError;
-pub use pebble::{AckHandler, AppMessageHandler, HealthDataHandler, NackHandler, Pebble};
+pub use pebble::{AckHandler, AppMessageHandler, HealthDataHandler, NackHandler, Pebble, WatchPrefHandler};

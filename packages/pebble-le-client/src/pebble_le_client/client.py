@@ -197,6 +197,56 @@ class PebbleClient:
         self._require_iface()
         return await self._iface.call_ping()
 
+    async def push_weather(
+        self,
+        location_name: str,
+        current_temp: int,
+        current_weather: int,
+        today_high: int,
+        today_low: int,
+        tomorrow_weather: int,
+        tomorrow_high: int,
+        tomorrow_low: int,
+        forecast_short: str = "",
+        *,
+        is_current_location: bool = True,
+        location_key: bytes | None = None,
+    ) -> None:
+        """Push weather data to the Pebble built-in weather app.
+
+        location_key: 16-byte UUID identifying the location entry. Re-use the
+            same bytes to update an existing entry. Defaults to a fixed UUID for
+            the current-location slot.
+        current_weather / tomorrow_weather: 0=PartlyCloudy, 1=CloudyDay,
+            2=LightSnow, 3=LightRain, 4=HeavyRain, 5=HeavySnow, 6=Generic,
+            7=Sun, 8=RainAndSnow, 255=Unknown.
+        Temperatures are in Celsius.
+        """
+        self._require_iface()
+        if location_key is None:
+            # Fixed UUID for the single "current weather" slot so repeated calls
+            # update the same entry rather than creating duplicates on the watch.
+            location_key = bytes.fromhex("e4c75d6ae95f4b778c3251a1c2b1d5c4")
+        if len(location_key) != 16:
+            msg = f"location_key must be 16 bytes, got {len(location_key)}"
+            raise ValueError(msg)
+        try:
+            await self._iface.call_push_weather(
+                bytes(location_key),
+                location_name,
+                forecast_short,
+                current_temp,
+                current_weather,
+                today_high,
+                today_low,
+                tomorrow_weather,
+                tomorrow_high,
+                tomorrow_low,
+                is_current_location,
+            )
+        except DBusError as e:
+            raise self._translate(e) from e
+
     # ------------------------------------------------------------------ #
     # handler registration (mirrors libpebble_ble's decorators)
     # ------------------------------------------------------------------ #
