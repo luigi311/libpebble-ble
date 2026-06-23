@@ -2,12 +2,50 @@
 
 use uuid::Uuid;
 
+use crate::uuids::NOTIFICATIONS_APP_UUID;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BlobDBCommand {
     Insert = 0x01,
     Delete = 0x04,
     Clear = 0x05,
+    /// Like Insert but carries a timestamp; requires BlobDB2 v1 (weather, pins with time).
+    InsertWithTimestamp = 0x0D,
+}
+
+/// Pebble weather condition icons shown in the built-in weather app.
+/// Matches libpebble3's WeatherManager.WeatherType enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WeatherType {
+    PartlyCloudy = 0,
+    CloudyDay    = 1,
+    LightSnow    = 2,
+    LightRain    = 3,
+    HeavyRain    = 4,
+    HeavySnow    = 5,
+    Generic      = 6,
+    Sun          = 7,
+    RainAndSnow  = 8,
+    Unknown      = 255,
+}
+
+impl WeatherType {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::PartlyCloudy,
+            1 => Self::CloudyDay,
+            2 => Self::LightSnow,
+            3 => Self::LightRain,
+            4 => Self::HeavyRain,
+            5 => Self::HeavySnow,
+            6 => Self::Generic,
+            7 => Self::Sun,
+            8 => Self::RainAndSnow,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,8 +56,15 @@ pub enum BlobDBId {
     Reminder = 3,
     Notification = 4,
     Weather = 5,
-    CannedMessages = 6,
-    Preferences = 7,
+    CannedResponses = 6,
+    HealthParams = 7,
+    Contacts = 8,
+    /// App configuration/preferences (e.g. "weatherApp" location list).
+    AppConfigs = 9,
+    HealthStats = 10,
+    AppGlance = 11,
+    /// Watch-side preferences DB (BlobDB2 only — used in MarkAllDirty to trigger sync).
+    WatchPrefs = 12,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +131,88 @@ pub fn build_blobdb_str_insert(db: BlobDBId, key: &str, blob: &[u8], token: u16)
     Ok(out)
 }
 
+/// Like `build_blobdb_insert` but with an explicit unix timestamp (u32).
+/// Required for BlobDB records that carry their own timestamp (weather, pins).
+/// Wire: `[0x0D][token 2B LE][db 1B][timestamp 4B LE][keyLen 1B][key N][valueLen 2B LE][value M]`
+pub fn build_blobdb_insert_with_timestamp(
+    db: BlobDBId,
+    key: &[u8; 16],
+    blob: &[u8],
+    timestamp: u32,
+    token: u16,
+) -> Result<Vec<u8>, &'static str> {
+    let blob_len = u16::try_from(blob.len()).map_err(|_| "BlobDB blob exceeds 65535 bytes")?;
+    let mut out = Vec::new();
+    out.push(BlobDBCommand::InsertWithTimestamp as u8);
+    out.extend_from_slice(&token.to_le_bytes());
+    out.push(db as u8);
+    out.extend_from_slice(&timestamp.to_le_bytes());
+    out.push(16u8);
+    out.extend_from_slice(key);
+    out.extend_from_slice(&blob_len.to_le_bytes());
+    out.extend_from_slice(blob);
+    Ok(out)
+}
+
+/// Build a `WeatherAppBlobRecord` matching the format expected by the Pebble weather app.
+///
+/// Binary layout (all little-endian):
+///   version u8=3 | currentTemp i16 | currentWeatherType u8 | todayHigh i16 | todayLow i16
+///   tomorrowWeatherType u8 | tomorrowHigh i16 | tomorrowLow i16 | lastUpdateTimeUtc u32
+///   isCurrentLocation u8 | allStringsLength u16 | locationName SLongString | forecastShort SLongString
+///
+/// SLongString = [u16 LE length][utf-8 bytes]
+pub fn build_weather_blob(
+    location_name: &str,
+    forecast_short: &str,
+    current_temp: i16,
+    current_weather: WeatherType,
+    today_high: i16,
+    today_low: i16,
+    tomorrow_weather: WeatherType,
+    tomorrow_high: i16,
+    tomorrow_low: i16,
+    timestamp: u32,
+    is_current_location: bool,
+) -> Vec<u8> {
+    let loc = location_name.as_bytes();
+    let fc = forecast_short.as_bytes();
+    let all_strings_len = (loc.len() + 2 + fc.len() + 2) as u16;
+
+    let mut out = Vec::new();
+    out.push(3u8); // version
+    out.extend_from_slice(&current_temp.to_le_bytes());
+    out.push(current_weather as u8);
+    out.extend_from_slice(&today_high.to_le_bytes());
+    out.extend_from_slice(&today_low.to_le_bytes());
+    out.push(tomorrow_weather as u8);
+    out.extend_from_slice(&tomorrow_high.to_le_bytes());
+    out.extend_from_slice(&tomorrow_low.to_le_bytes());
+    out.extend_from_slice(&timestamp.to_le_bytes());
+    out.push(is_current_location as u8);
+    out.extend_from_slice(&all_strings_len.to_le_bytes());
+    out.extend_from_slice(&(loc.len() as u16).to_le_bytes());
+    out.extend_from_slice(loc);
+    out.extend_from_slice(&(fc.len() as u16).to_le_bytes());
+    out.extend_from_slice(fc);
+    out
+}
+
+/// Build the `WeatherPrefsBlobItem` value for the `AppConfigs` `"weatherApp"` key.
+///
+/// Wire format: `[numLocations: u8][uuid1: 16 bytes][uuid2: 16 bytes]...`
+///
+/// This tells the watch which location UUIDs are active in the Weather BlobDB.
+/// Without this entry the watch weather app shows "no location information".
+pub fn build_weather_prefs_blob(location_keys: &[[u8; 16]]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + location_keys.len() * 16);
+    out.push(location_keys.len() as u8);
+    for key in location_keys {
+        out.extend_from_slice(key);
+    }
+    out
+}
+
 pub fn parse_blobdb_response(payload: &[u8]) -> Option<(u16, u8)> {
     if payload.len() < 3 {
         return None;
@@ -94,12 +221,6 @@ pub fn parse_blobdb_response(payload: &[u8]) -> Option<(u16, u8)> {
     let status = payload[2];
     Some((token, status))
 }
-
-// ---------------------------------------------------------------------------
-// Notifications (built on top of BlobDB inserts)
-// ---------------------------------------------------------------------------
-
-const NOTIFICATIONS_APP_UUID: &str = "b2cae818-10f8-46df-ad2b-98ad2254a3c1";
 
 /// Pebble system icon resource IDs (0x80000000 flag = system resource).
 /// Values from Gadgetbridge's PebbleIconID enum.
@@ -261,8 +382,8 @@ const BLOBDB2_RESP_SYNCDONE: u8        = 0x8A; // phone → watch
 const BLOBDB2_RESP_VERSION: u8         = 0x8B; // watch → phone
 const BLOBDB2_RESP_MARK_ALL_DIRTY: u8  = 0x8C; // watch → phone
 
-// The watch firmware's internal database ID for WatchPrefs (db=12).
-// Distinct from BlobDBId::Preferences (7), which is the phone-side ID used in MarkAllDirty.
+/// Raw DB-ID constant for matching incoming BlobDB2 Write messages that carry WatchPrefs records.
+/// Matches `BlobDBId::WatchPrefs as u8`; kept as a plain constant so it can be used in match arms.
 pub const BLOBDB2_DB_WATCH_PREFS: u8 = 12;
 
 /// A `Write` or `WriteBack` record sent by the watch to the phone.

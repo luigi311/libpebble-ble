@@ -16,6 +16,7 @@
 //!     Scan(d timeout_secs) -> a(ss)
 //!     ActivateHealth(q height_cm, q weight_kg, y age, y gender, b hrm_enabled)
 //!     FetchHealthData()
+//!     PushWeather(ay location_key, s location_name, s forecast_short, n current_temp, y current_weather, n today_high, n today_low, y tomorrow_weather, n tomorrow_high, n tomorrow_low, b is_current_location)
 //!
 //!   Signals
 //!     AppMessageReceived(s uuid, a{i(sv)} data)
@@ -31,7 +32,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use libpebble_ble::{AppMessageValue, DatalogData, Pebble};
+use libpebble_ble::{AppMessageValue, DatalogData, Pebble, WeatherType};
 
 use crate::db::HealthDb;
 use tokio::sync::mpsc;
@@ -268,6 +269,53 @@ impl PebbleDaemon {
     fn fetch_health_data(&self) -> Result<(), DaemonError> {
         let pebble = self.require_pebble()?;
         pebble.fetch_health_data().map_err(|e| DaemonError::Failed(e.to_string()))
+    }
+
+    /// Push weather data to the Pebble built-in weather app.
+    ///
+    /// `location_key` must be exactly 16 bytes (a UUID); re-use the same bytes to update
+    /// an existing location entry rather than creating a new one.
+    ///
+    /// `current_weather` / `tomorrow_weather`: 0=PartlyCloudy, 1=CloudyDay, 2=LightSnow,
+    ///   3=LightRain, 4=HeavyRain, 5=HeavySnow, 6=Generic, 7=Sun, 8=RainAndSnow, 255=Unknown
+    async fn push_weather(
+        &self,
+        location_key: Vec<u8>,
+        location_name: String,
+        forecast_short: String,
+        current_temp: i16,
+        current_weather: u8,
+        today_high: i16,
+        today_low: i16,
+        tomorrow_weather: u8,
+        tomorrow_high: i16,
+        tomorrow_low: i16,
+        is_current_location: bool,
+    ) -> Result<(), DaemonError> {
+        if location_key.len() != 16 {
+            return Err(DaemonError::Failed(format!(
+                "location_key must be 16 bytes, got {}",
+                location_key.len()
+            )));
+        }
+        let key: [u8; 16] = location_key.try_into().unwrap();
+        let pebble = self.require_pebble()?;
+        pebble
+            .push_weather(
+                &key,
+                &location_name,
+                &forecast_short,
+                current_temp,
+                WeatherType::from_u8(current_weather),
+                today_high,
+                today_low,
+                WeatherType::from_u8(tomorrow_weather),
+                tomorrow_high,
+                tomorrow_low,
+                is_current_location,
+            )
+            .await
+            .map_err(|e| DaemonError::Failed(e.to_string()))
     }
 
     // ---- Signals ----
