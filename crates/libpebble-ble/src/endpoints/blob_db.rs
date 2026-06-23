@@ -33,6 +33,9 @@ pub enum BlobDBStatus {
     KeyDoesNotExist = 6,
     DatabaseFull = 7,
     DataStale = 8,
+    NotSupported = 9,
+    Locked = 10,
+    TryLater = 11,
 }
 
 impl BlobDBStatus {
@@ -46,6 +49,9 @@ impl BlobDBStatus {
             6 => Some(Self::KeyDoesNotExist),
             7 => Some(Self::DatabaseFull),
             8 => Some(Self::DataStale),
+            9 => Some(Self::NotSupported),
+            10 => Some(Self::Locked),
+            11 => Some(Self::TryLater),
             _ => None,
         }
     }
@@ -231,4 +237,191 @@ pub fn build_notification(
     let blob = build_notification_blob(title, body, subtitle, timestamp, category)?;
     let key: [u8; 16] = Uuid::new_v4().into_bytes();
     build_blobdb_insert(BlobDBId::Notification, &key, &blob, token)
+}
+
+// ---------------------------------------------------------------------------
+// BlobDB V2 — bidirectional sync protocol (endpoint 0xB2DB)
+// ---------------------------------------------------------------------------
+
+// Phone → Watch command bytes
+const BLOBDB2_CMD_VERSION: u8        = 0x0B;
+const BLOBDB2_CMD_MARK_ALL_DIRTY: u8 = 0x0C;
+
+// Watch → Phone command bytes (watch-initiated)
+const BLOBDB2_CMD_WRITE: u8          = 0x08;
+const BLOBDB2_CMD_WRITEBACK: u8      = 0x09;
+const BLOBDB2_CMD_SYNCDONE: u8       = 0x0A;
+
+// Response bytes (0x80 | request_cmd)
+const BLOBDB2_RESP_DIRTY_DATABASE: u8  = 0x86; // watch → phone
+const BLOBDB2_RESP_START_SYNC: u8      = 0x87; // watch → phone
+const BLOBDB2_RESP_WRITE: u8           = 0x88; // phone → watch
+const BLOBDB2_RESP_WRITEBACK: u8       = 0x89; // phone → watch
+const BLOBDB2_RESP_SYNCDONE: u8        = 0x8A; // phone → watch
+const BLOBDB2_RESP_VERSION: u8         = 0x8B; // watch → phone
+const BLOBDB2_RESP_MARK_ALL_DIRTY: u8  = 0x8C; // watch → phone
+
+// The watch firmware's internal database ID for WatchPrefs (db=12).
+// Distinct from BlobDBId::Preferences (7), which is the phone-side ID used in MarkAllDirty.
+pub const BLOBDB2_DB_WATCH_PREFS: u8 = 12;
+
+/// A `Write` or `WriteBack` record sent by the watch to the phone.
+///
+/// Wire layout: `[cmd][token 2B LE][db 1B][timestamp 4B LE][keySize 1B][key N][valueSize 2B LE][value M]`
+#[derive(Debug, Clone)]
+pub struct BlobDB2Write {
+    pub token: u16,
+    pub is_writeback: bool,
+    pub db: u8,
+    pub timestamp: u32,
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
+}
+
+/// Decoded incoming BlobDB2 message (watch → phone direction plus responses to phone-initiated requests).
+#[derive(Debug)]
+pub enum BlobDB2Incoming {
+    /// Watch pushes a record to us (Write or WriteBack).
+    Write(BlobDB2Write),
+    /// Watch signals sync is complete for a database.
+    SyncDone { token: u16, db: u8 },
+    /// Watch replies to our `Version` query.
+    VersionResponse { token: u16, status: u8, version: u8 },
+    /// Watch replies to our `MarkAllDirty` command.
+    MarkAllDirtyResponse { token: u16, status: u8 },
+    /// Watch replies to our `DirtyDatabase` command.
+    DirtyDatabaseResponse { token: u16, status: u8, dirty_dbs: Vec<u8> },
+    /// Watch replies to our `StartSync` command.
+    StartSyncResponse { token: u16, status: u8 },
+}
+
+impl BlobDB2Incoming {
+    /// Returns the token for response variants (None for watch-initiated messages).
+    pub fn response_token(&self) -> Option<u16> {
+        match self {
+            Self::VersionResponse { token, .. }      => Some(*token),
+            Self::MarkAllDirtyResponse { token, .. } => Some(*token),
+            Self::DirtyDatabaseResponse { token, .. } => Some(*token),
+            Self::StartSyncResponse { token, .. }    => Some(*token),
+            _ => None,
+        }
+    }
+}
+
+/// Build a `Version` query packet (phone → watch, cmd=0x0B).
+pub fn build_blobdb2_version(token: u16) -> Vec<u8> {
+    let mut out = vec![BLOBDB2_CMD_VERSION];
+    out.extend_from_slice(&token.to_le_bytes());
+    out
+}
+
+/// Build a `MarkAllDirty` command (phone → watch, cmd=0x0C).
+pub fn build_blobdb2_mark_all_dirty(token: u16, db: BlobDBId) -> Vec<u8> {
+    let mut out = vec![BLOBDB2_CMD_MARK_ALL_DIRTY];
+    out.extend_from_slice(&token.to_le_bytes());
+    out.push(db as u8);
+    out
+}
+
+/// ACK a `Write` from the watch (phone → watch, cmd=0x88).
+pub fn build_blobdb2_write_response(token: u16, status: BlobDBStatus) -> Vec<u8> {
+    blobdb2_status_response(BLOBDB2_RESP_WRITE, token, status)
+}
+
+/// ACK a `WriteBack` from the watch (phone → watch, cmd=0x89).
+pub fn build_blobdb2_writeback_response(token: u16, status: BlobDBStatus) -> Vec<u8> {
+    blobdb2_status_response(BLOBDB2_RESP_WRITEBACK, token, status)
+}
+
+/// ACK a `SyncDone` from the watch (phone → watch, cmd=0x8A).
+pub fn build_blobdb2_syncdone_response(token: u16, status: BlobDBStatus) -> Vec<u8> {
+    blobdb2_status_response(BLOBDB2_RESP_SYNCDONE, token, status)
+}
+
+fn blobdb2_status_response(cmd: u8, token: u16, status: BlobDBStatus) -> Vec<u8> {
+    let mut out = vec![cmd];
+    out.extend_from_slice(&token.to_le_bytes());
+    out.push(status as u8);
+    out
+}
+
+/// Parse an incoming BlobDB2 message from the watch.
+///
+/// All messages share a 3-byte header: `[cmd 1B][token 2B LE]`.
+pub fn parse_blobdb2_incoming(payload: &[u8]) -> Option<BlobDB2Incoming> {
+    if payload.len() < 3 {
+        return None;
+    }
+    let cmd = payload[0];
+    let token = u16::from_le_bytes([payload[1], payload[2]]);
+    let rest = &payload[3..];
+
+    match cmd {
+        BLOBDB2_CMD_WRITE | BLOBDB2_CMD_WRITEBACK => {
+            // [db 1B][timestamp 4B LE][keySize 1B][key keySize B][valueSize 2B LE][value valueSize B]
+            if rest.len() < 7 {
+                return None;
+            }
+            let db = rest[0];
+            let timestamp = u32::from_le_bytes([rest[1], rest[2], rest[3], rest[4]]);
+            let key_size = rest[5] as usize;
+            let off = 6;
+            if rest.len() < off + key_size + 2 {
+                return None;
+            }
+            let key = rest[off..off + key_size].to_vec();
+            let off = off + key_size;
+            let val_size = u16::from_le_bytes([rest[off], rest[off + 1]]) as usize;
+            let off = off + 2;
+            if rest.len() < off + val_size {
+                return None;
+            }
+            let value = rest[off..off + val_size].to_vec();
+            Some(BlobDB2Incoming::Write(BlobDB2Write {
+                token,
+                is_writeback: cmd == BLOBDB2_CMD_WRITEBACK,
+                db,
+                timestamp,
+                key,
+                value,
+            }))
+        }
+        BLOBDB2_CMD_SYNCDONE => {
+            if rest.is_empty() {
+                return None;
+            }
+            Some(BlobDB2Incoming::SyncDone { token, db: rest[0] })
+        }
+        BLOBDB2_RESP_VERSION => {
+            if rest.len() < 2 {
+                return None;
+            }
+            Some(BlobDB2Incoming::VersionResponse { token, status: rest[0], version: rest[1] })
+        }
+        BLOBDB2_RESP_MARK_ALL_DIRTY => {
+            if rest.is_empty() {
+                return None;
+            }
+            Some(BlobDB2Incoming::MarkAllDirtyResponse { token, status: rest[0] })
+        }
+        BLOBDB2_RESP_DIRTY_DATABASE => {
+            if rest.len() < 2 {
+                return None;
+            }
+            let status = rest[0];
+            let count = rest[1] as usize;
+            if rest.len() < 2 + count {
+                return None;
+            }
+            let dirty_dbs = rest[2..2 + count].to_vec();
+            Some(BlobDB2Incoming::DirtyDatabaseResponse { token, status, dirty_dbs })
+        }
+        BLOBDB2_RESP_START_SYNC => {
+            if rest.is_empty() {
+                return None;
+            }
+            Some(BlobDB2Incoming::StartSyncResponse { token, status: rest[0] })
+        }
+        _ => None,
+    }
 }

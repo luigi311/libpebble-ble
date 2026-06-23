@@ -31,6 +31,7 @@ pub enum Endpoint {
     /// streams records via the DataLog endpoint.
     HealthSync = 911,
     BlobDb = 0xB1DB,
+    BlobDbV2 = 0xB2DB,
     Ping = 2001,
     AppFetch = 6001,
     /// Watch-initiated logging sessions (health, analytics). Sessions are opened,
@@ -48,6 +49,7 @@ impl Endpoint {
             52 => Some(Self::AppRunState),
             911 => Some(Self::HealthSync),
             0xB1DB => Some(Self::BlobDb),
+            0xB2DB => Some(Self::BlobDbV2),
             2001 => Some(Self::Ping),
             6001 => Some(Self::AppFetch),
             6778 => Some(Self::DataLog),

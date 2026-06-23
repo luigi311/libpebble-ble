@@ -35,8 +35,11 @@ use crate::{
         },
         app_run_state::{build_app_run_state, AppRunStateCmd},
         blob_db::{
-            build_blobdb_str_insert, build_notification, parse_blobdb_response, BlobDBId,
-            BlobDBStatus, NotificationCategory,
+            build_blobdb2_mark_all_dirty, build_blobdb2_syncdone_response,
+            build_blobdb2_version, build_blobdb2_write_response, build_blobdb2_writeback_response,
+            build_blobdb_str_insert, build_notification, parse_blobdb2_incoming,
+            parse_blobdb_response, BlobDB2Incoming, BlobDBId, BlobDBStatus, NotificationCategory,
+            BLOBDB2_DB_WATCH_PREFS,
         },
         datalog::{
             self, build_reply, build_report_sessions, DatalogData, DatalogSession,
@@ -64,14 +67,18 @@ pub type AppMessageHandler =
 pub type AckHandler = Arc<dyn Fn(u8) + Send + Sync + 'static>;
 pub type NackHandler = Arc<dyn Fn(u8) + Send + Sync + 'static>;
 pub type HealthDataHandler = Arc<dyn Fn(DatalogData) + Send + Sync + 'static>;
+pub type WatchPrefHandler = Arc<dyn Fn(String, Vec<u8>) + Send + Sync + 'static>;
 
 struct PebbleInner {
     app_message_handlers: Vec<AppMessageHandler>,
     ack_handlers: Vec<AckHandler>,
     nack_handlers: Vec<NackHandler>,
     health_handlers: Vec<HealthDataHandler>,
+    watch_pref_handlers: Vec<WatchPrefHandler>,
     /// transaction_id → future resolved when watch ACK/NACKs it
     pending: HashMap<u8, oneshot::Sender<bool>>,
+    /// BlobDB2 token → future resolved when watch sends the matching response
+    blobdb2_pending: HashMap<u16, oneshot::Sender<BlobDB2Incoming>>,
     txn: u8,
     /// Handle to the GATT server send channel (set once server is started).
     gatt_server: Option<PebbleGattServerHandle>,
@@ -86,7 +93,9 @@ impl PebbleInner {
             ack_handlers: Vec::new(),
             nack_handlers: Vec::new(),
             health_handlers: Vec::new(),
+            watch_pref_handlers: Vec::new(),
             pending: HashMap::new(),
+            blobdb2_pending: HashMap::new(),
             txn: 0,
             gatt_server: None,
             datalog_sessions: HashMap::new(),
@@ -164,6 +173,10 @@ impl Pebble {
         self.inner.lock().unwrap().health_handlers.push(handler);
     }
 
+    pub fn on_watch_pref(&self, handler: WatchPrefHandler) {
+        self.inner.lock().unwrap().watch_pref_handlers.push(handler);
+    }
+
     // ---- liveness ----
 
     pub fn is_connected(&self) -> bool {
@@ -231,6 +244,7 @@ impl Pebble {
                         inner.pending.drain().collect();
                     let nack_handlers = inner.nack_handlers.clone();
                     inner.datalog_sessions.clear();
+                    inner.blobdb2_pending.clear();
                     (pending, nack_handlers)
                 };
                 for (txn, sender) in pending {
@@ -311,7 +325,18 @@ impl Pebble {
             }
         }
 
-        // 8. Monitor device events for disconnect, with a keepalive poll fallback.
+        // 8. BlobDB2 version handshake — determines whether to use InsertWithTimestamp
+        //    and triggers the watch to sync its preferences back to us.
+        let blob_db_version = self.negotiate_blobdb2_version().await;
+        if blob_db_version >= 1 {
+            let _ = self.send_pebble(
+                Endpoint::BlobDbV2,
+                &build_blobdb2_mark_all_dirty(rand_u16(), BlobDBId::Preferences),
+            );
+            debug!("BlobDB2 v{blob_db_version}: MarkAllDirty sent for Preferences");
+        }
+
+        // 9. Monitor device events for disconnect, with a keepalive poll fallback.
         let connected_tx = Arc::clone(&self.connected_tx);
         tokio::spawn(async move {
             match device.events().await {
@@ -502,6 +527,27 @@ impl Pebble {
                 warn!("pairing trigger write failed: {e}");
             } else {
                 debug!("wrote 0x09 to pairing trigger (server mode)");
+            }
+        }
+    }
+
+    async fn negotiate_blobdb2_version(&self) -> u8 {
+        let token = rand_u16();
+        let (tx, rx) = oneshot::channel::<BlobDB2Incoming>();
+        self.inner.lock().unwrap().blobdb2_pending.insert(token, tx);
+        if self.send_pebble(Endpoint::BlobDbV2, &build_blobdb2_version(token)).is_err() {
+            self.inner.lock().unwrap().blobdb2_pending.remove(&token);
+            return 0;
+        }
+        match timeout(Duration::from_secs(10), rx).await {
+            Ok(Ok(BlobDB2Incoming::VersionResponse { status, version, .. })) if status == BlobDBStatus::Success as u8 => {
+                debug!("BlobDB2 version: {version}");
+                version
+            }
+            _ => {
+                self.inner.lock().unwrap().blobdb2_pending.remove(&token);
+                debug!("BlobDB2 version query timed out; assuming v0");
+                0
             }
         }
     }
@@ -716,6 +762,9 @@ fn on_pebble_message(message: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
                 }
             }
         }
+        Some(Endpoint::BlobDbV2) => {
+            on_blobdb2_message(payload.to_vec(), inner);
+        }
         _ => {} // unknown endpoint; ignore quietly
     }
 }
@@ -880,4 +929,54 @@ fn rand_u16() -> u16 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     (t.subsec_nanos() & 0xFFFF) as u16
+}
+
+fn on_blobdb2_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
+    let Some(msg) = parse_blobdb2_incoming(&payload) else {
+        warn!("BlobDB2: failed to parse {} bytes", payload.len());
+        return;
+    };
+
+    match msg {
+        BlobDB2Incoming::Write(w) => {
+            let key = String::from_utf8_lossy(&w.key).trim_end_matches('\0').to_owned();
+            debug!(
+                "BlobDB2 {}: db={} key={key:?} val_len={}",
+                if w.is_writeback { "WriteBack" } else { "Write" },
+                w.db, w.value.len()
+            );
+            let resp = if w.is_writeback {
+                build_blobdb2_writeback_response(w.token, BlobDBStatus::Success)
+            } else {
+                build_blobdb2_write_response(w.token, BlobDBStatus::Success)
+            };
+            blobdb2_send(inner, resp);
+            if w.db == BLOBDB2_DB_WATCH_PREFS {
+                let handlers: Vec<_> = inner.lock().unwrap().watch_pref_handlers.clone();
+                for h in handlers {
+                    h(key.clone(), w.value.clone());
+                }
+            }
+        }
+        BlobDB2Incoming::SyncDone { token, db } => {
+            debug!("BlobDB2 SyncDone db={db}");
+            blobdb2_send(inner, build_blobdb2_syncdone_response(token, BlobDBStatus::Success));
+        }
+        other => {
+            if let Some(token) = other.response_token() {
+                let mut guard = inner.lock().unwrap();
+                if let Some(sender) = guard.blobdb2_pending.remove(&token) {
+                    let _ = sender.send(other);
+                }
+            }
+        }
+    }
+}
+
+fn blobdb2_send(inner: &Arc<Mutex<PebbleInner>>, payload: Vec<u8>) {
+    if let Some(pkt) = pebble_pack(Endpoint::BlobDbV2, &payload) {
+        if let Some(srv) = &inner.lock().unwrap().gatt_server {
+            srv.send(pkt);
+        }
+    }
 }

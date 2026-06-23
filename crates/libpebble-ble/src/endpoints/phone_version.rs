@@ -67,7 +67,9 @@ pub fn build_phone_version_response() -> Vec<u8> {
         | protocol_caps::APP_MESSAGES_8K
         | protocol_caps::HEALTH_INSIGHTS
         | protocol_caps::NOTIFICATION_FILTERING
-        | protocol_caps::WEATHER;
+        | protocol_caps::WEATHER
+        | protocol_caps::BLOB_DB_VERSION
+        | protocol_caps::SETTINGS_SYNC;
 
     let mut out = vec![0x01u8];
     out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
