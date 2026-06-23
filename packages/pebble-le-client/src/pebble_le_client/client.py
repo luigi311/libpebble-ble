@@ -27,6 +27,8 @@ AppMessageHandler = Callable[[str, dict], None]
 AckHandler = Callable[[int], None]
 NackHandler = Callable[[int], None]
 ConnectionHandler = Callable[[bool], None]
+# tag, app_uuid, session_timestamp, items_left, crc, item_type, item_size, data
+HealthDataHandler = Callable[[int, bytes, int, int, int, int, int, bytes], None]
 
 _DBUS = "org.freedesktop.DBus"
 _DBUS_PATH = "/org/freedesktop/DBus"
@@ -64,6 +66,7 @@ class PebbleClient:
         self._ack_handlers: list[AckHandler] = []
         self._nack_handlers: list[NackHandler] = []
         self._conn_handlers: list[ConnectionHandler] = []
+        self._health_handlers: list[HealthDataHandler] = []
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -108,6 +111,7 @@ class PebbleClient:
         self._iface.on_ack_received(self._dispatch_ack)
         self._iface.on_nack_received(self._dispatch_nack)
         self._iface.on_connection_changed(self._dispatch_connection)
+        self._iface.on_health_data_received(self._dispatch_health_data)
 
     async def close(self) -> None:
         bus, self._bus = self._bus, None
@@ -197,6 +201,60 @@ class PebbleClient:
         self._require_iface()
         return await self._iface.call_ping()
 
+    async def update_time(self) -> None:
+        """Sync the watch clock to the current system time."""
+        self._require_iface()
+        try:
+            await self._iface.call_update_time()
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def notify(self, title: str, body: str, subtitle: str = "") -> int:
+        """Send a notification to the watch. Returns the BlobDB token.
+
+        subtitle is shown as the sender/app name and is used for icon selection.
+        """
+        self._require_iface()
+        try:
+            return await self._iface.call_notify(title, body, subtitle)
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def scan(self, timeout_secs: float = 10.0) -> list[tuple[str, str]]:
+        """Scan for nearby Pebble devices. Returns [(address, name)] pairs."""
+        self._require_iface()
+        try:
+            return await self._iface.call_scan(timeout_secs)
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def activate_health(
+        self,
+        height_cm: int,
+        weight_kg: int,
+        age: int,
+        gender: int,
+        *,
+        hrm_enabled: bool = False,
+    ) -> None:
+        """Write the health user profile to the watch and trigger a DataLog sync.
+
+        gender: 0 = male, 1 = female.
+        """
+        self._require_iface()
+        try:
+            await self._iface.call_activate_health(height_cm, weight_kg, age, gender, hrm_enabled)
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def fetch_health_data(self) -> None:
+        """Ask the watch to flush pending health records via DataLog sessions."""
+        self._require_iface()
+        try:
+            await self._iface.call_fetch_health_data()
+        except DBusError as e:
+            raise self._translate(e) from e
+
     async def push_weather(
         self,
         location_name: str,
@@ -266,6 +324,10 @@ class PebbleClient:
         self._conn_handlers.append(fn)
         return fn
 
+    def on_health_data(self, fn: HealthDataHandler) -> HealthDataHandler:
+        self._health_handlers.append(fn)
+        return fn
+
     # ------------------------------------------------------------------ #
     # signal dispatch (D-Bus -> local handlers)
     # ------------------------------------------------------------------ #
@@ -288,6 +350,20 @@ class PebbleClient:
     def _dispatch_connection(self, connected: bool) -> None:
         for h in self._conn_handlers:
             _safe(h, connected)
+
+    def _dispatch_health_data(
+        self,
+        tag: int,
+        app_uuid: bytes,
+        session_timestamp: int,
+        items_left: int,
+        crc: int,
+        item_type: int,
+        item_size: int,
+        data: bytes,
+    ) -> None:
+        for h in self._health_handlers:
+            _safe(h, tag, app_uuid, session_timestamp, items_left, crc, item_type, item_size, data)
 
     # ------------------------------------------------------------------ #
     def _require_iface(self):
