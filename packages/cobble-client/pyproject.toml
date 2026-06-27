@@ -1,6 +1,6 @@
 [project]
 name = "cobble-client"
-version = "0.2.0"
+version = "0.3.0"
 description = "Pythonic client for the cobbled daemon — talk to your Pebble without touching D-Bus."
 requires-python = ">=3.11"
 dependencies = [
