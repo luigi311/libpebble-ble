@@ -1,10 +1,10 @@
-# pebble-le
+# cobble
 
 Talk to a Pebble smartwatch over Bluetooth Low Energy from Linux — as a Rust
 library, a long-lived Rust daemon, and a Python client other apps use.
 
 The watch gives you exactly **one** BLE link, so exactly one process can own
-it. That process is the daemon; everything else talks to the daemon over D-Bus.
+it. That process is the daemon (`cobbled`); everything else talks to the daemon over D-Bus.
 
 ## Components
 
@@ -13,12 +13,12 @@ crates/libpebble-ble   Rust BLE/protocol library. Owns BlueZ (via bluer),
                        the PPoGATT GATT server, pairing, AppMessage, and all
                        endpoint codecs. Knows nothing about D-Bus or the daemon.
           ↑
-crates/pebble-led      Rust daemon. Wraps one libpebble-ble Pebble instance,
-                       exports org.pebble_le.Daemon on the session bus, handles
+crates/cobbled         Rust daemon. Wraps one libpebble-ble Pebble instance,
+                       exports org.cobble.Daemon on the session bus, handles
                        reconnection, forwards desktop notifications to the watch.
           ↑
-packages/              Python client. pebble-le-client is the only Python
-pebble-le-client       package; it wraps the D-Bus proxy behind the same API
+packages/              Python client. cobble-client is the only Python
+cobble-client          package; it wraps the D-Bus proxy behind the same API
                        libpebble-ble exposes (same decorators, same AppMessage
                        dict, same u8/u16/u32/i8/i16/i32 width wrappers).
 ```
@@ -64,51 +64,51 @@ Adding a new endpoint: create `endpoints/<name>.rs`, add it to
 
 ## Liveness — two independent questions
 
-* **Is the daemon process alive?** Its well-known bus name (`org.pebble_le.Daemon`)
-  has an owner. `PebbleClient.is_daemon_running()` checks this with
+* **Is the daemon process alive?** Its well-known bus name (`org.cobble.Daemon`)
+  has an owner. `CobbleClient.is_daemon_running()` checks this with
   `NameHasOwner` — no socket connect, no timeout, no stale pidfile.
 * **Is the watch reachable?** The daemon's `Connected` property +
-  `ConnectionChanged` signal. `PebbleClient.connected` / `is_connected()`.
+  `ConnectionChanged` signal. `CobbleClient.connected` / `is_connected()`.
 
 A daemon can be alive while the watch is out of range; apps need to check both.
 
 ## Quick start
 
 Create the config file first (required — the daemon will not start without it).
-The path follows the XDG Base Directory spec: `$XDG_CONFIG_HOME/pebble-led/config.toml`,
-which defaults to `~/.config/pebble-led/config.toml` when `XDG_CONFIG_HOME` is not set.
+The path follows the XDG Base Directory spec: `$XDG_CONFIG_HOME/cobbled/config.toml`,
+which defaults to `~/.config/cobbled/config.toml` when `XDG_CONFIG_HOME` is not set.
 
 ```sh
-mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/pebble-led"
-cat > "${XDG_CONFIG_HOME:-$HOME/.config}/pebble-led/config.toml" << 'EOF'
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/cobbled"
+cat > "${XDG_CONFIG_HOME:-$HOME/.config}/cobbled/config.toml" << 'EOF'
 address = "E6:94:0A:D4:D5:DC"   # your watch Bluetooth address
 # adapter = "hci0"               # optional, default is hci0
 # verbose = false                 # optional, or use -v at runtime
-# db = "/custom/path/health.db"  # optional, default is XDG_DATA_HOME/pebble-led/health.db
+# db = "/custom/path/health.db"  # optional, default is XDG_DATA_HOME/cobbled/health.db
 EOF
 ```
 
 Run the daemon (owns the BLE link, syncs time, forwards desktop notifications):
 
 ```sh
-pebble-led                          # reads ~/.config/pebble-led/config.toml
-pebble-led --verbose                # TRACE-level logging (overrides config)
-pebble-led --config /other/path.toml  # use a different config file
+cobbled                          # reads ~/.config/cobbled/config.toml
+cobbled --verbose                # TRACE-level logging (overrides config)
+cobbled --config /other/path.toml  # use a different config file
 ```
 
 Any Python app talks to it without touching BLE or D-Bus:
 
 ```python
 import asyncio
-from pebble_le_client import PebbleClient, u16
+from cobble_client import CobbleClient, u16
 
 async def main():
-    async with PebbleClient() as pebble:
-        @pebble.on_app_message
+    async with CobbleClient() as cobble:
+        @cobble.on_app_message
         def handler(app_uuid, data):
             print("from watch:", app_uuid, data)
 
-        await pebble.send_app_message(
+        await cobble.send_app_message(
             "00000000-0000-0000-0000-000000000000",
             {0: "hello", 1: u16(150)},
         )
@@ -127,7 +127,7 @@ cargo build --release
 cargo test
 
 # Build and run the daemon directly (config file must exist first)
-cargo run --bin pebble-led
+cargo run --bin cobbled
 
 # Python client: install dependencies and run tests
 uv sync --all-packages
@@ -141,26 +141,26 @@ uv run pytest
 cargo build --release
 
 # Copy the binary somewhere on your PATH
-sudo install -m755 target/release/pebble-led /usr/local/bin/
+sudo install -m755 target/release/cobbled /usr/local/bin/
 
 # Or build the .deb (requires cargo-deb or debhelper setup)
 dpkg-buildpackage -us -uc -b
-sudo apt install ./pebble-led_*_*.deb
+sudo apt install ./cobbled_*_*.deb
 ```
 
 ### Configure the daemon
 
-Create `$XDG_CONFIG_HOME/pebble-led/config.toml` before enabling the service
-(defaults to `~/.config/pebble-led/config.toml` when `XDG_CONFIG_HOME` is not
+Create `$XDG_CONFIG_HOME/cobbled/config.toml` before enabling the service
+(defaults to `~/.config/cobbled/config.toml` when `XDG_CONFIG_HOME` is not
 set). The systemd unit checks for this file and will not start (or enter a
 restart loop) if it is absent.
 
 ```toml
-# $XDG_CONFIG_HOME/pebble-led/config.toml
+# $XDG_CONFIG_HOME/cobbled/config.toml
 address = "E6:94:0A:D4:D5:DC"   # required — your watch Bluetooth address
 # adapter = "hci0"               # optional, default hci0
 # verbose = false                 # optional
-# db = "/custom/path/health.db"  # optional, default XDG_DATA_HOME/pebble-led/health.db
+# db = "/custom/path/health.db"  # optional, default XDG_DATA_HOME/cobbled/health.db
 ```
 
 Start as a user service (must be a user service — the notification monitor
@@ -168,21 +168,21 @@ connects to your session D-Bus, which only exists inside your login):
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now pebble-led.service
+systemctl --user enable --now cobbled.service
 ```
 
 ### Platform notes
 
-* **dbus-broker systems**: The notification monitor uses `BecomeMonitor` 
+* **dbus-broker systems**: The notification monitor uses `BecomeMonitor`
   (the dbus-broker-compatible API) and falls back to `eavesdrop=true`
   AddMatch on older `dbus-daemon` installs.
 
 * **BlueZ `AccessDenied`**: add yourself to the `bluetooth` group and start a
   fresh session: `sudo usermod -aG bluetooth "$USER"`, then log out and back in.
 
-## D-Bus interface (`org.pebble_le.Daemon`)
+## D-Bus interface (`org.cobble.Daemon`)
 
-Object path: `/org/pebble_le/Daemon` — session bus.
+Object path: `/org/cobble/Daemon` — session bus.
 
 | Kind | Name | Signature | Notes |
 |------|------|-----------|-------|
@@ -197,7 +197,9 @@ Object path: `/org/pebble_le/Daemon` — session bus.
 | Method | `Scan` | `(d) → a(ss)` | timeout\_secs → [(address, name)] |
 | Method | `ActivateHealth` | `(q, q, y, y, b)` | height\_cm, weight\_kg, age, gender (0=male 1=female), hrm\_enabled |
 | Method | `FetchHealthData` | `()` | flush pending health records from watch |
+| Method | `ReprocessHealthData` | `()` | rebuild derived health tables from raw blobs |
 | Method | `PushWeather` | `(ay, s, s, n, y, n, n, y, n, n, b)` | location\_key (16 bytes), location\_name, forecast\_short, current\_temp\_c, current\_weather, today\_high\_c, today\_low\_c, tomorrow\_weather, tomorrow\_high\_c, tomorrow\_low\_c, is\_current\_location. Weather types: 0=PartlyCloudy 1=CloudyDay 2=LightSnow 3=LightRain 4=HeavyRain 5=HeavySnow 6=Generic 7=Sun 8=RainAndSnow |
+| Method | `ReloadConfig` | `()` | re-read config; disconnects if address/adapter changed |
 | Signal | `AppMessageReceived` | `(s, a{i(sv)})` | uuid, data |
 | Signal | `AckReceived` | `(u)` | txn |
 | Signal | `NackReceived` | `(u)` | txn |
@@ -209,7 +211,7 @@ AppMessage values cross D-Bus as `(tag, variant)` pairs where tag is one of
 marshalling transparently.
 
 Health data is stored automatically in SQLite at
-`$XDG_DATA_HOME/pebble-led/health.db` (or the path set in `config.toml`).
+`$XDG_DATA_HOME/cobbled/health.db` (or the path set in `config.toml`).
 The `HealthDataReceived` signal fires for each batch so external tools can
 consume raw records without reading the database directly.
 
@@ -223,7 +225,7 @@ consume raw records without reading the database directly.
 - [x] Time sync
 - [ ] Notifications
   - [x] Send
-  - [ ] Actions 
+  - [ ] Actions
   - [x] Categorization (Text/Call/Other)
 - [x] Weather
 - [ ] Health
@@ -235,11 +237,11 @@ consume raw records without reading the database directly.
   - [ ] Controls
 - [ ] PBW install
 
-### pebble-led (Daemon)
+### cobbled (Daemon)
 - [x] Pings
 - [x] Reconnects
 - [x] Time Sync
-- [ ] Notificiations
+- [ ] Notifications
   - [x] Forwarding
   - [ ] Actions (Dismiss)
   - [x] Categorizations
@@ -247,7 +249,7 @@ consume raw records without reading the database directly.
   - [x] External applications
 - [ ] Music
 - [x] Health
-- [ ] Weather
+- [x] Weather
 
 
 ## Why one repo

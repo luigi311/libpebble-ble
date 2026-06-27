@@ -1,4 +1,4 @@
-"""PebbleClient — the D-Bus proxy wearing libpebble_ble's API.
+"""CobbleClient — the D-Bus proxy wearing libpebble_ble's API.
 
 Everything D-Bus (bus name, object path, proxy setup, variant marshalling,
 the (tag,payload) wire encoding) is hidden behind this class. Apps see methods
@@ -17,9 +17,9 @@ from dbus_fast.constants import BusType
 
 from ._codec import decode_data_dict, encode_data_dict
 
-BUS_NAME = "org.pebble_le.Daemon"
-OBJECT_PATH = "/org/pebble_le/Daemon"
-INTERFACE = "org.pebble_le.Daemon"
+BUS_NAME = "org.cobble.Daemon"
+OBJECT_PATH = "/org/cobble/Daemon"
+INTERFACE = "org.cobble.Daemon"
 USE_SESSION_BUS = True
 
 # Same handler shapes libpebble_ble uses, so code reads identically either side.
@@ -35,32 +35,32 @@ _DBUS_PATH = "/org/freedesktop/DBus"
 
 
 class DaemonNotRunningError(RuntimeError):
-    """The pebble-led daemon is not running (its bus name has no owner)."""
+    """The cobbled daemon is not running (its bus name has no owner)."""
 
 
 class NotConnectedError(RuntimeError):
     """The daemon is running but its BLE link to the watch is down."""
 
 
-class PebbleClient:
-    """Async client for the pebble-led daemon.
+class CobbleClient:
+    """Async client for the cobbled daemon.
 
     Usage as a context manager (recommended):
 
-        async with PebbleClient() as pebble:
-            await pebble.send_app_message(uuid, {0: "hi"})
+        async with CobbleClient() as cobble:
+            await cobble.send_app_message(uuid, {0: "hi"})
 
     or manually:
 
-        pebble = PebbleClient()
-        await pebble.connect()
+        cobble = CobbleClient()
+        await cobble.connect()
         ...
-        await pebble.close()
+        await cobble.close()
     """
 
     def __init__(self) -> None:
         self._bus: MessageBus | None = None
-        self._iface = None  # proxy interface for org.pebble_le.Daemon
+        self._iface = None  # proxy interface for org.cobble.Daemon
         self._dbus_iface = None  # proxy for org.freedesktop.DBus (NameHasOwner)
         self._msg_handlers: list[AppMessageHandler] = []
         self._ack_handlers: list[AckHandler] = []
@@ -71,7 +71,7 @@ class PebbleClient:
     # ------------------------------------------------------------------ #
     # lifecycle
     # ------------------------------------------------------------------ #
-    async def __aenter__(self) -> "PebbleClient":
+    async def __aenter__(self) -> "CobbleClient":
         await self.connect()
         return self
 
@@ -97,8 +97,8 @@ class PebbleClient:
         if require_daemon and not await self.is_daemon_running():
             await self.close()
             msg = (
-                f"the pebble-led daemon ({BUS_NAME}) is not running. Start it "
-                f"with `pebble-led <watch-address>` or enable its service."
+                f"the cobbled daemon ({BUS_NAME}) is not running. Start it "
+                f"with `cobbled` or enable its systemd user service."
             )
             raise DaemonNotRunningError(msg)
 

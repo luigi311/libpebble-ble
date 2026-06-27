@@ -4,8 +4,8 @@ If these pass, a width-pinned value (u16/i8/…) survives the daemon<->client
 D-Bus hop and reaches the encoder as the exact width the caller asked for.
 """
 
-from pebble_le_client import Int, i8, i16, i32, u8, u16, u32
-from pebble_le_client._codec import decode_data_dict, decode_value, encode_data_dict, encode_value
+from cobble_client import Int, i8, i16, i32, u8, u16, u32
+from cobble_client._codec import decode_data_dict, decode_value, encode_data_dict, encode_value
 
 
 def test_width_pins_survive_round_trip():

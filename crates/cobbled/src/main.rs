@@ -1,8 +1,8 @@
 //! Daemon entry point.
 //!
-//! Reads `$XDG_CONFIG_HOME/pebble-led/config.toml` (or the path given by
-//! `--config`), acquires the session D-Bus, exports the PebbleDaemon interface,
-//! requests the well-known name (org.pebble_le.Daemon), opens the watch
+//! Reads `$XDG_CONFIG_HOME/cobbled/config.toml` (or the path given by
+//! `--config`), acquires the session D-Bus, exports the CobbleDaemon interface,
+//! requests the well-known name (org.cobble.Daemon), opens the watch
 //! connection, and runs until signalled.
 
 use std::path::PathBuf;
@@ -23,13 +23,13 @@ mod supervisor;
 
 use db::HealthDb;
 use notify_monitor::NotificationMonitor;
-use service::{run_signal_emitter, BUS_NAME, OBJECT_PATH, PebbleDaemon};
+use service::{run_signal_emitter, BUS_NAME, OBJECT_PATH, CobbleDaemon};
 use supervisor::run_supervisor;
 
 #[derive(Parser)]
-#[command(name = "pebble-led", about = "Long-lived daemon owning the Pebble BLE connection.")]
+#[command(name = "cobbled", about = "Long-lived daemon owning the Pebble BLE connection.")]
 struct Cli {
-    /// Path to config file (default: $XDG_CONFIG_HOME/pebble-led/config.toml)
+    /// Path to config file (default: $XDG_CONFIG_HOME/cobbled/config.toml)
     #[arg(long)]
     config: Option<PathBuf>,
     /// Enable verbose (TRACE-level) logging (overrides config)
@@ -48,7 +48,7 @@ fn default_db_path() -> anyhow::Result<PathBuf> {
              set db in config to specify the health database path explicitly"
         );
     };
-    Ok(base.join("pebble-led/health.db"))
+    Ok(base.join("cobbled/health.db"))
 }
 
 #[tokio::main]
@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-    let daemon = PebbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), config_path, event_tx, health_db.clone());
+    let daemon = CobbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), config_path, event_tx, health_db.clone());
 
     // Build the session D-Bus connection.
     let conn = zbus::connection::Builder::session()?

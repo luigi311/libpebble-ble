@@ -1,6 +1,6 @@
-//! D-Bus service interface (org.pebble_le.Daemon).
+//! D-Bus service interface (org.cobble.Daemon).
 //!
-//! Interface (org.pebble_le.Daemon on /org/pebble_le/Daemon):
+//! Interface (org.cobble.Daemon on /org/cobble/Daemon):
 //!
 //!   Properties
 //!     Connected     b    watch BLE link is up right now
@@ -48,18 +48,18 @@ use zbus::{
 use crate::codec::{decode_wire_dict, encode_wire_dict, WireDict};
 use crate::notification::app_name_to_category;
 
-/// Custom D-Bus errors under the `org.pebble_le.Daemon` prefix.
+/// Custom D-Bus errors under the `org.cobble.Daemon` prefix.
 /// `NotConnected` lets the Python client's `_translate()` raise `NotConnectedError`
 /// instead of a generic `DBusError`.
 #[derive(Debug, zbus::DBusError)]
-#[zbus(prefix = "org.pebble_le.Daemon")]
+#[zbus(prefix = "org.cobble.Daemon")]
 enum DaemonError {
     NotConnected(String),
     Failed(String),
 }
 
-pub const BUS_NAME: &str = "org.pebble_le.Daemon";
-pub const OBJECT_PATH: &str = "/org/pebble_le/Daemon";
+pub const BUS_NAME: &str = "org.cobble.Daemon";
+pub const OBJECT_PATH: &str = "/org/cobble/Daemon";
 
 // ---------------------------------------------------------------------------
 // Events (supervisor → signal emitter)
@@ -75,7 +75,7 @@ pub enum DaemonEvent {
 }
 
 // ---------------------------------------------------------------------------
-// PebbleDaemon
+// CobbleDaemon
 // ---------------------------------------------------------------------------
 
 struct DaemonState {
@@ -94,11 +94,11 @@ struct DaemonState {
 }
 
 #[derive(Clone)]
-pub struct PebbleDaemon {
+pub struct CobbleDaemon {
     state: Arc<Mutex<DaemonState>>,
 }
 
-impl PebbleDaemon {
+impl CobbleDaemon {
 
     pub fn new(
         address: String,
@@ -195,8 +195,8 @@ impl PebbleDaemon {
 // zbus interface
 // ---------------------------------------------------------------------------
 
-#[interface(name = "org.pebble_le.Daemon")]
-impl PebbleDaemon {
+#[interface(name = "org.cobble.Daemon")]
+impl CobbleDaemon {
     // ---- Properties ----
 
     #[zbus(property)]
@@ -427,14 +427,14 @@ impl PebbleDaemon {
 /// corresponding D-Bus signals. Keeps the `Connected` property in sync.
 pub async fn run_signal_emitter(
     conn: Connection,
-    _daemon: PebbleDaemon,
+    _daemon: CobbleDaemon,
     mut event_rx: mpsc::UnboundedReceiver<DaemonEvent>,
     health_db: Option<Arc<Mutex<HealthDb>>>,
 ) {
     while let Some(event) = event_rx.recv().await {
         let iface_result = conn
             .object_server()
-            .interface::<_, PebbleDaemon>(OBJECT_PATH)
+            .interface::<_, CobbleDaemon>(OBJECT_PATH)
             .await;
         let iface = match iface_result {
             Ok(i) => i,
@@ -446,18 +446,18 @@ pub async fn run_signal_emitter(
         let emitter = iface.signal_emitter();
         match event {
             DaemonEvent::ConnectionChanged(c) => {
-                let _ = PebbleDaemon::connection_changed(emitter, c).await;
+                let _ = CobbleDaemon::connection_changed(emitter, c).await;
                 let _ = iface.get().await.connected_changed(iface.signal_emitter()).await;
             }
             DaemonEvent::AppMessageReceived { uuid, data } => {
                 let wire = encode_wire_dict(&data);
-                let _ = PebbleDaemon::app_message_received(emitter, &uuid, wire).await;
+                let _ = CobbleDaemon::app_message_received(emitter, &uuid, wire).await;
             }
             DaemonEvent::AckReceived(txn) => {
-                let _ = PebbleDaemon::ack_received(emitter, txn as u32).await;
+                let _ = CobbleDaemon::ack_received(emitter, txn as u32).await;
             }
             DaemonEvent::NackReceived(txn) => {
-                let _ = PebbleDaemon::nack_received(emitter, txn as u32).await;
+                let _ = CobbleDaemon::nack_received(emitter, txn as u32).await;
             }
             DaemonEvent::HealthData(batch) => {
                 if let Some(db) = &health_db {
@@ -473,7 +473,7 @@ pub async fn run_signal_emitter(
                         Ok(Ok(())) => {}
                     }
                 }
-                let _ = PebbleDaemon::health_data_received(
+                let _ = CobbleDaemon::health_data_received(
                     emitter,
                     batch.tag,
                     batch.app_uuid.to_vec(),
