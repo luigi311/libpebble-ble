@@ -1,0 +1,176 @@
+// Reusable UI primitives.
+
+import { Palette } from "theme.slint";
+
+// ─── Toggle switch ───────────────────────────────────────────────────────────
+
+export component Toggle inherits Rectangle {
+    in-out property <bool> checked: false;
+    width: 50px; height: 28px; border-radius: 14px;
+    background: checked ? Palette.accent : Palette.surface;
+    border-width: 1px;
+    border-color: checked ? Palette.accent : Palette.muted;
+    animate background { duration: 150ms; easing: ease-in-out; }
+    Rectangle {
+        width: 22px; height: 22px; border-radius: 11px; background: white;
+        x: checked ? parent.width - self.width - 3px : 3px;
+        y: (parent.height - self.height) / 2;
+        animate x { duration: 150ms; easing: ease-in-out; }
+    }
+    TouchArea { clicked => { root.checked = !root.checked; } }
+}
+
+// ─── Labelled text-input row ─────────────────────────────────────────────────
+
+export component FormField inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> value;
+    in property <string> placeholder;
+    spacing: 6px;
+    Text { text: root.label; color: Palette.muted; font-size: 12px; }
+    Rectangle {
+        background: Palette.surface; border-radius: 8px; height: 48px; clip: true;
+        if root.value == "": Text {
+            text: root.placeholder; color: Palette.muted; font-size: 14px;
+            x: 14px; width: parent.width - 28px; height: parent.height; vertical-alignment: center;
+        }
+        TextInput {
+            text <=> root.value; color: Palette.text; font-size: 14px;
+            x: 14px; width: parent.width - 28px; height: parent.height; vertical-alignment: center;
+        }
+    }
+}
+
+// ─── Label/value info row (Device tab) ────────────────────────────────────────
+
+export component InfoRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    height: 22px;
+    Text { text: root.label; color: Palette.muted; font-size: 13px; vertical-alignment: center; }
+    Rectangle { horizontal-stretch: 1; }
+    Text {
+        text: root.value == "" ? "—" : root.value;
+        color: Palette.text; font-size: 13px; vertical-alignment: center; horizontal-alignment: right;
+    }
+}
+
+// ─── Settings category row (tappable, with chevron) ───────────────────────────
+
+export component SettingsRow inherits Rectangle {
+    in property <string> label;
+    in property <string> sublabel;
+    callback clicked;
+    background: Palette.surface;
+    border-radius: 10px;
+    height: 62px;
+    HorizontalLayout {
+        padding-left: 16px; padding-right: 16px; spacing: 8px;
+        VerticalLayout {
+            alignment: center; spacing: 3px;
+            Text { text: root.label; color: Palette.text; font-size: 15px; font-weight: 600; }
+            if root.sublabel != "": Text { text: root.sublabel; color: Palette.muted; font-size: 12px; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Text { text: "›"; color: Palette.muted; font-size: 24px; vertical-alignment: center; }
+    }
+    TouchArea { clicked => { root.clicked(); } }
+}
+
+// ─── Full-width action button (Device Actions) ────────────────────────────────
+
+export component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 52px;
+    border-radius: 10px;
+    background: Palette.surface;
+    border-width: root.danger ? 1px : 0px;
+    border-color: Palette.red;
+    opacity: root.enabled ? 1.0 : 0.4;
+    Text {
+        text: root.label;
+        color: root.danger ? Palette.red : Palette.accent;
+        font-size: 15px; font-weight: 600;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    TouchArea { clicked => { if (root.enabled) { root.clicked(); } } }
+}
+
+// ─── Segmented control button ─────────────────────────────────────────────────
+
+export component SegBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked;
+    height: 32px;
+    horizontal-stretch: 1;
+    border-radius: 7px;
+    background: active ? Palette.accent : transparent;
+    animate background { duration: 120ms; easing: ease-in-out; }
+    Text {
+        text: root.label;
+        color: root.active ? white : Palette.muted;
+        font-size: 13px;
+        font-weight: root.active ? 700 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea { clicked => { root.clicked(); } }
+}
+
+// ─── Period segmented control + navigation ────────────────────────────────────
+
+export component PeriodControl inherits VerticalLayout {
+    in property <int> period;
+    in property <string> period-label: "This Week";
+    in property <bool> can-forward: false;
+    callback period-changed(int);
+    callback go-back();
+    callback go-forward();
+
+    padding-left: 16px; padding-right: 16px; padding-top: 8px; padding-bottom: 6px;
+    spacing: 8px;
+
+    // Segmented control row
+    Rectangle {
+        background: Palette.surface; border-radius: 10px; height: 32px;
+        HorizontalLayout {
+            padding: 3px; spacing: 3px;
+            SegBtn { label: "Day";   active: root.period == 0; clicked => { root.period-changed(0); } }
+            SegBtn { label: "Week";  active: root.period == 1; clicked => { root.period-changed(1); } }
+            SegBtn { label: "Month"; active: root.period == 2; clicked => { root.period-changed(2); } }
+        }
+    }
+
+    // Navigation row: ‹  [label]  ›
+    HorizontalLayout {
+        height: 30px; spacing: 4px;
+        Rectangle {
+            width: 36px; border-radius: 6px; background: Palette.surface;
+            Text { text: "‹"; color: Palette.text; font-size: 20px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { clicked => { root.go-back(); } }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            Text {
+                text: root.period-label;
+                color: Palette.text; font-size: 13px; font-weight: 600;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            width: 36px; border-radius: 6px;
+            background: root.can-forward ? Palette.surface : transparent;
+            Text {
+                text: "›";
+                color: root.can-forward ? Palette.text : Palette.muted;
+                font-size: 20px; font-weight: 600;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            if root.can-forward: TouchArea { clicked => { root.go-forward(); } }
+        }
+    }
+}
