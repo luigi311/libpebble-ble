@@ -8,9 +8,9 @@ use std::sync::Arc;
 use libpebble_ble::{HealthDataHandler, Pebble};
 use tracing::{debug, info, warn};
 
-use crate::service::{DaemonEvent, PebbleDaemon};
+use crate::service::{CobbleDaemon, DaemonEvent};
 
-pub async fn run_supervisor(daemon: PebbleDaemon) {
+pub async fn run_supervisor(daemon: CobbleDaemon) {
     let mut backoff = 2.0f64;
 
     while !daemon.is_stopping() {

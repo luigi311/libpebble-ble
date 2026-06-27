@@ -1,5 +1,6 @@
-pebble-led (0.2.0-1) UNRELEASED; urgency=medium
+cobbled (0.2.0-1) UNRELEASED; urgency=medium
 
+  * Rename project to cobble/cobbled
   * Swap to rust
   * Add health support
   * Add BlobDB2
@@ -8,7 +9,7 @@ pebble-led (0.2.0-1) UNRELEASED; urgency=medium
 
  -- Luis Garcia <luigi311@Luigi311-Desktop>  Tue, 23 Jun 2026 05:39:08 +0000
 
-pebble-led (0.1.0-1) unstable; urgency=medium
+cobbled (0.1.0-1) unstable; urgency=medium
 
   * Initial release.
 

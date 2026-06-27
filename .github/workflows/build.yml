@@ -66,12 +66,12 @@ jobs:
           # the rustup toolchain installed above, not the apt packages.
           dpkg-buildpackage -us -uc -b -d
           mkdir -p dist
-          mv ../pebble-led_*_${{ matrix.arch }}.deb dist/
+          mv ../cobbled_*_${{ matrix.arch }}.deb dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pebble-led-deb-${{ matrix.arch }}
+          name: cobbled-deb-${{ matrix.arch }}
           path: dist/*.deb
           if-no-files-found: error
 
@@ -97,12 +97,12 @@ jobs:
       - name: Build wheel
         run: |
           pip install build
-          python -m build packages/pebble-le-client --outdir dist/
+          python -m build packages/cobble-client --outdir dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pebble-le-client-wheel
+          name: cobble-client-wheel
           path: dist/*.whl
           if-no-files-found: error
 

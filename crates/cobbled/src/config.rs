@@ -21,8 +21,8 @@ fn default_adapter() -> String {
     "hci0".to_string()
 }
 
-/// Returns `$XDG_CONFIG_HOME/pebble-led/config.toml` or
-/// `~/.config/pebble-led/config.toml` as a fallback.
+/// Returns `$XDG_CONFIG_HOME/cobbled/config.toml` or
+/// `~/.config/cobbled/config.toml` as a fallback.
 pub fn default_config_path() -> anyhow::Result<PathBuf> {
     let base = if let Some(p) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         PathBuf::from(p)
@@ -34,7 +34,7 @@ pub fn default_config_path() -> anyhow::Result<PathBuf> {
              use --config to specify the config file path explicitly"
         );
     };
-    Ok(base.join("pebble-led/config.toml"))
+    Ok(base.join("cobbled/config.toml"))
 }
 
 pub fn load(path: &Path) -> anyhow::Result<Config> {

@@ -6,13 +6,13 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 	dh $@
 
 override_dh_auto_build:
-	cargo build --release --bin pebble-led
+	cargo build --release --bin cobbled
 
 override_dh_auto_install:
-	install -Dm755 target/release/pebble-led \
-		debian/pebble-led/usr/bin/pebble-led
-	install -Dm644 data/pebble-led.service \
-		debian/pebble-led/usr/lib/systemd/user/pebble-led.service
+	install -Dm755 target/release/cobbled \
+		debian/cobbled/usr/bin/cobbled
+	install -Dm644 data/cobbled.service \
+		debian/cobbled/usr/lib/systemd/user/cobbled.service
 
 override_dh_auto_test:
 	: # tests require a live BlueZ/D-Bus session; run separately in CI

@@ -1,4 +1,4 @@
-Source: pebble-led
+Source: cobbled
 Section: comm
 Priority: optional
 Maintainer: Luis Garcia <git@luigi311.com>
@@ -11,10 +11,10 @@ Build-Depends: debhelper-compat (= 13),
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
 
-Package: pebble-led
+Package: cobbled
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: Pebble smartwatch BLE daemon
+Description: Cobble — Pebble smartwatch BLE daemon
  Connects to a Pebble smartwatch over Bluetooth Low Energy and runs as a
  user service providing time sync, desktop-notification forwarding, and an
  AppMessage bridge over D-Bus.

@@ -1,17 +1,17 @@
-"""pebble_le_client — talk to your Pebble through the daemon, in plain Python.
+"""cobble_client — talk to your Pebble through the daemon, in plain Python.
 
 An app never opens a BLE connection or touches D-Bus directly. It does:
 
     import asyncio
-    from pebble_le_client import PebbleClient, u16
+    from cobble_client import CobbleClient, u16
 
     async def main():
-        async with PebbleClient() as pebble:
-            @pebble.on_app_message
+        async with CobbleClient() as cobble:
+            @cobble.on_app_message
             def handler(app_uuid, data):
                 print("from watch:", app_uuid, data)
 
-            await pebble.send_app_message(
+            await cobble.send_app_message(
                 "00000000-0000-0000-0000-000000000000",
                 {0: "hello", 1: u16(150)},
             )
@@ -29,13 +29,13 @@ need to depend on libpebble-ble directly just to pin an integer width.
 """
 
 from ._types import Int, i8, i16, i32, u8, u16, u32
-from .client import DaemonNotRunningError, NotConnectedError, PebbleClient
+from .client import CobbleClient, DaemonNotRunningError, NotConnectedError
 
 __all__ = [
+    "CobbleClient",
     "DaemonNotRunningError",
     "Int",
     "NotConnectedError",
-    "PebbleClient",
     "i8",
     "i16",
     "i32",
