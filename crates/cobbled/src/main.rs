@@ -32,9 +32,9 @@ struct Cli {
     /// Path to config file (default: $XDG_CONFIG_HOME/cobbled/config.toml)
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Enable verbose (TRACE-level) logging (overrides config)
-    #[arg(short, long)]
-    verbose: bool,
+    /// Increase log verbosity: -v = debug, -vv = trace. Overrides config/RUST_LOG.
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 fn default_db_path() -> anyhow::Result<PathBuf> {
@@ -61,11 +61,21 @@ async fn main() -> anyhow::Result<()> {
     };
     let cfg = config::load(&config_path)?;
 
-    let verbose = cli.verbose || cfg.verbose;
-    let filter = if verbose {
-        EnvFilter::new("trace")
+    // Verbosity: CLI -v count wins; legacy `verbose = true` in config maps to
+    // the deepest level (trace). Our crates follow the chosen level while noisy
+    // dependencies (zbus, bluer) are kept one notch quieter so shared logs stay
+    // readable. Level 0 still honours RUST_LOG for surgical control.
+    let level = if cli.verbose > 0 {
+        cli.verbose
+    } else if cfg.verbose {
+        2
     } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+        0
+    };
+    let filter = match level {
+        0 => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        1 => EnvFilter::new("info,cobbled=debug,libpebble_ble=debug"),
+        _ => EnvFilter::new("debug,cobbled=trace,libpebble_ble=trace"),
     };
     tracing_subscriber::fmt().with_env_filter(filter).init();
 

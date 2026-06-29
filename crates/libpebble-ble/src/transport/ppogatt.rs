@@ -161,8 +161,9 @@ impl PPoGATTSession {
             self.rx_buffer.insert(serial, body.to_vec());
             None
         } else {
-            // Behind rx_seq: duplicate we already ACKed. Safe to ignore.
-            tracing::warn!(
+            // Behind rx_seq: duplicate we already ACKed (normal retransmit after
+            // a lost ACK). Safe to ignore; debug-level since it isn't an error.
+            tracing::debug!(
                 "PPoGATT DATA serial={serial} duplicate (expected {}), ignoring",
                 self.rx_seq
             );
