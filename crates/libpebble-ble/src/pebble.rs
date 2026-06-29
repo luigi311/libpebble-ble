@@ -33,7 +33,7 @@ use crate::{
             build_app_message_ack, build_app_message_push, parse_app_message, AppMessageCmd,
             AppMessageValue,
         },
-        app_run_state::{build_app_run_state, AppRunStateCmd},
+        app_run_state::{build_app_run_state, parse_app_run_state, AppRunStateCmd},
         blob_db::{
             build_blobdb2_mark_all_dirty, build_blobdb2_syncdone_response,
             build_blobdb2_version, build_blobdb2_write_response, build_blobdb2_writeback_response,
@@ -79,6 +79,8 @@ pub type HealthDataHandler = Arc<dyn Fn(DatalogData) + Send + Sync + 'static>;
 pub type WatchPrefHandler = Arc<dyn Fn(u8, String, Vec<u8>) + Send + Sync + 'static>;
 /// Handler called with the watch battery percentage (0–100) when it changes.
 pub type BatteryHandler = Arc<dyn Fn(u8) + Send + Sync + 'static>;
+/// Handler called when an app opens/closes on the watch: `(app_uuid, running)`.
+pub type AppRunStateHandler = Arc<dyn Fn(String, bool) + Send + Sync + 'static>;
 
 struct PebbleInner {
     app_message_handlers: Vec<AppMessageHandler>,
@@ -89,6 +91,7 @@ struct PebbleInner {
     battery_handlers: Vec<BatteryHandler>,
     /// Latest watch battery percentage (0–100); `None` until first read.
     battery_level: Option<u8>,
+    app_run_state_handlers: Vec<AppRunStateHandler>,
     /// transaction_id → future resolved when watch ACK/NACKs it
     pending: HashMap<u8, oneshot::Sender<bool>>,
     /// BlobDB2 token → future resolved when watch sends the matching response
@@ -118,6 +121,7 @@ impl PebbleInner {
             watch_pref_handlers: Vec::new(),
             battery_handlers: Vec::new(),
             battery_level: None,
+            app_run_state_handlers: Vec::new(),
             pending: HashMap::new(),
             blobdb2_pending: HashMap::new(),
             watch_version_pending: Vec::new(),
@@ -209,6 +213,12 @@ impl Pebble {
     /// The latest known watch battery percentage (0–100), or `None` if not yet read.
     pub fn battery_level(&self) -> Option<u8> {
         self.inner.lock().unwrap().battery_level
+    }
+
+    /// Register a handler called when an app opens/closes on the watch:
+    /// `(app_uuid, running)` where `running` is true on launch, false on exit.
+    pub fn on_app_run_state(&self, handler: AppRunStateHandler) {
+        self.inner.lock().unwrap().app_run_state_handlers.push(handler);
     }
 
     pub fn on_watch_pref(&self, handler: WatchPrefHandler) {
@@ -1043,6 +1053,21 @@ fn on_pebble_message(message: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
         }
         Some(Endpoint::AppMessage) => {
             on_app_message(payload.to_vec(), inner);
+        }
+        Some(Endpoint::AppRunState) => {
+            // Watch reports an app opening (Start) or closing (Stop).
+            if let Some((cmd, uuid)) = parse_app_run_state(payload) {
+                let running = match cmd {
+                    AppRunStateCmd::Start => true,
+                    AppRunStateCmd::Stop => false,
+                    AppRunStateCmd::Request => return, // phone→watch only
+                };
+                debug!("app run state: uuid={uuid} running={running}");
+                let handlers: Vec<_> = inner.lock().unwrap().app_run_state_handlers.clone();
+                for h in handlers {
+                    h(uuid.clone(), running);
+                }
+            }
         }
         Some(Endpoint::DataLog) => {
             on_datalog_message(payload.to_vec(), inner);
