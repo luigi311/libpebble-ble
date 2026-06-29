@@ -356,8 +356,23 @@ impl CobbleDaemon {
         self.state.lock().unwrap().watch_settings.insert(key, value);
     }
 
-    pub(crate) fn set_battery_level(&self, level: u8) {
-        self.state.lock().unwrap().battery_level = Some(level);
+    /// Cache a battery level, but only while connected and only if it changed.
+    /// Returns true when the cache was updated (caller should emit a signal).
+    /// Dropping events while disconnected preserves the "-1 = unknown" contract
+    /// against late notifications from a torn-down session.
+    pub(crate) fn set_battery_level(&self, level: u8) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if !state.connected || state.battery_level == Some(level) {
+            return false;
+        }
+        state.battery_level = Some(level);
+        true
+    }
+
+    /// The battery level held by the live watch session, if any.
+    pub(crate) fn session_battery_level(&self) -> Option<u8> {
+        let pebble = self.state.lock().unwrap().pebble.clone();
+        pebble.and_then(|p| p.battery_level())
     }
 
     fn merged_profile(s: &DaemonState) -> Option<HealthProfile> {
@@ -826,16 +841,29 @@ pub async fn run_signal_emitter(
             DaemonEvent::ConnectionChanged(c) => {
                 let _ = CobbleDaemon::connection_changed(emitter, c).await;
                 let _ = iface.get().await.connected_changed(iface.signal_emitter()).await;
-                if !c {
+                if c {
+                    // The connect-time battery read can be queued before this
+                    // event and dropped by the disconnected gate; deliver it now.
+                    if let Some(level) = daemon.session_battery_level() {
+                        if daemon.set_battery_level(level) {
+                            let _ =
+                                iface.get().await.battery_level_changed(iface.signal_emitter()).await;
+                            let _ = CobbleDaemon::battery_changed(emitter, i16::from(level)).await;
+                        }
+                    }
+                } else {
                     // Battery is unknown while disconnected (state was cleared).
                     let _ = iface.get().await.battery_level_changed(iface.signal_emitter()).await;
                     let _ = CobbleDaemon::battery_changed(emitter, -1).await;
                 }
             }
             DaemonEvent::BatteryChanged(level) => {
-                daemon.set_battery_level(level);
-                let _ = iface.get().await.battery_level_changed(iface.signal_emitter()).await;
-                let _ = CobbleDaemon::battery_changed(emitter, i16::from(level)).await;
+                // Gated on connected so a late event after disconnect can't
+                // resurrect a stale level past the -1 contract.
+                if daemon.set_battery_level(level) {
+                    let _ = iface.get().await.battery_level_changed(iface.signal_emitter()).await;
+                    let _ = CobbleDaemon::battery_changed(emitter, i16::from(level)).await;
+                }
             }
             DaemonEvent::AppMessageReceived { uuid, data } => {
                 let wire = encode_wire_dict(&data);

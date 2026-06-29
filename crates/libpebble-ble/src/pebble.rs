@@ -567,6 +567,9 @@ impl Pebble {
     /// (standard BLE Battery Service). Updates fire registered `on_battery`
     /// handlers. Best-effort — a watch without the service is simply silent.
     async fn subscribe_battery(&self, device: &Device) {
+        // Scope the cache to this session: if a Pebble is reused across
+        // reconnects, the first reading must not be deduped against a stale value.
+        self.inner.lock().unwrap().battery_level = None;
         let Some(c) = find_char(device, BATTERY_LEVEL_CHARACTERISTIC).await else {
             debug!("no battery characteristic; battery level unavailable");
             return;
