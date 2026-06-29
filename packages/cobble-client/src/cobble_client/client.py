@@ -62,28 +62,6 @@ class CobbleClient:
         await cobble.close()
     """
 
-    # Field order of the GetHealthProfile struct (qqqqbbbbybqqqqqqb), used to
-    # turn the positional D-Bus struct into a named dict.
-    HEALTH_PROFILE_FIELDS = (
-        "height_cm",
-        "weight_kg",
-        "age",
-        "gender",  # 0 = female, 1 = male, 2 = other
-        "tracking_enabled",
-        "activity_insights_enabled",
-        "sleep_insights_enabled",
-        "hrm_enabled",
-        "hrm_measurement_interval",  # 0=10min,1=30min,2=1h,3=disabled,255=unknown
-        "hrm_activity_tracking",
-        "resting_hr",
-        "elevated_hr",
-        "max_hr",
-        "hr_zone1_threshold",
-        "hr_zone2_threshold",
-        "hr_zone3_threshold",
-        "imperial_units",
-    )
-
     def __init__(self) -> None:
         self._bus: MessageBus | None = None
         self._iface = None  # proxy interface for org.cobble.Daemon
@@ -294,18 +272,18 @@ class CobbleClient:
             raise self._translate(e) from e
 
     async def get_health_profile(self) -> dict:
-        """Return the watch's health profile as a dict.
+        """Return the watch's health profile as a dict keyed by field name.
 
-        Keys are `HEALTH_PROFILE_FIELDS`: height_cm, weight_kg, age, gender,
-        tracking/insight flags, HRM settings and heart-rate zones, imperial_units.
-        Raises if no profile has synced yet (call fetch_health_params first).
+        Keys: height_cm, weight_kg, age, gender, tracking/insight flags, HRM
+        settings, heart-rate zones, imperial_units. Raises if no profile has
+        synced yet (call fetch_health_params first).
         """
         self._require_iface()
         try:
-            values = await self._iface.call_get_health_profile()
+            raw = await self._iface.call_get_health_profile()
         except DBusError as e:
             raise self._translate(e) from e
-        return self._profile_dict(values)
+        return {k: _unwrap(v) for k, v in raw.items()}
 
     async def get_watch_settings(self) -> dict:
         """Return all decoded general watch settings (db 12) as a key -> value dict.
@@ -319,16 +297,6 @@ class CobbleClient:
         except DBusError as e:
             raise self._translate(e) from e
         return {k: _unwrap(v) for k, v in raw.items()}
-
-    def _profile_dict(self, values) -> dict:
-        """Build the profile dict, rejecting a daemon/client field-count mismatch."""
-        if len(values) != len(self.HEALTH_PROFILE_FIELDS):
-            msg = (
-                f"health profile has {len(values)} fields, expected "
-                f"{len(self.HEALTH_PROFILE_FIELDS)} — daemon/client schema mismatch"
-            )
-            raise ValueError(msg)
-        return dict(zip(self.HEALTH_PROFILE_FIELDS, values, strict=True))
 
     async def push_weather(
         self,
@@ -449,12 +417,7 @@ class CobbleClient:
             _safe(h, tag, app_uuid, session_timestamp, items_left, crc, item_type, item_size, data)
 
     def _dispatch_health_profile(self, profile) -> None:
-        try:
-            decoded = self._profile_dict(profile)
-        except ValueError:
-            # Signal payload doesn't match our schema; drop rather than deliver
-            # partial/garbled data to handlers.
-            return
+        decoded = {k: _unwrap(v) for k, v in profile.items()}
         for h in self._health_profile_handlers:
             _safe(h, decoded)
 

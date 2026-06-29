@@ -17,7 +17,7 @@
 //!     ActivateHealth(q height_cm, q weight_kg, y age, y gender, b hrm_enabled)
 //!     FetchHealthData()
 //!     FetchHealthParams()
-//!     GetHealthProfile() -> (q height_cm, q weight_kg, q age, q gender, b tracking, b activity_insights, b sleep_insights, b hrm_enabled, y hrm_interval, b hrm_activity_tracking, q resting_hr, q elevated_hr, q max_hr, q hr_zone1, q hr_zone2, q hr_zone3, b imperial_units)
+//!     GetHealthProfile() -> a{sv}  health profile keyed by field name (height_cm, weight_kg, age, gender, …, imperial_units)
 //!     GetWatchSettings() -> a{sv}  general watch settings (db 12), key -> bool/uint32/string
 //!     PushWeather(ay location_key, s location_name, s forecast_short, n current_temp, y current_weather, n today_high, n today_low, y tomorrow_weather, n tomorrow_high, n tomorrow_low, b is_current_location)
 //!     ReprocessHealthData()
@@ -28,7 +28,7 @@
 //!     NackReceived(u txn)
 //!     ConnectionChanged(b connected)
 //!     HealthDataReceived(u tag, ay app_uuid, u session_timestamp, u items_left, u crc, y item_type, q item_size, ay data)
-//!     HealthProfileReceived((qqqqbbbbybqqqqqqb) profile)
+//!     HealthProfileReceived(a{sv} profile)
 //!     WatchSettingReceived(s key, v value)
 //!
 //! AppMessage values cross the D-Bus hop as (tag, payload) pairs; see codec.rs.
@@ -104,10 +104,12 @@ fn watch_pref_owned_value(v: &WatchPrefValue) -> OwnedValue {
 }
 
 /// The watch-side health profile, as synced back over BlobDB2 (WatchPrefs).
-/// Crosses D-Bus as a struct `(qqqqbbbbybqqqqqqb)`. Single-byte wire fields are
-/// widened to u16 so they render as plain integers for D-Bus clients; HR fields
-/// are 0 and `hrm_measurement_interval` is 255 until the watch syncs them.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, zvariant::Type)]
+///
+/// Internal type; it crosses D-Bus as a self-describing `a{sv}` map (see
+/// [`HealthProfile::to_dbus_map`]) rather than a positional struct, so clients
+/// read fields by name and a bare-struct serialization quirk is avoided.
+/// HR fields are 0 and `hrm_measurement_interval` is 255 until synced.
+#[derive(Debug, Clone, Copy)]
 pub struct HealthProfile {
     pub height_cm: u16,
     pub weight_kg: u16,
@@ -130,6 +132,34 @@ pub struct HealthProfile {
     pub hr_zone3_threshold: u16,
     /// true = imperial (mi/lb), false = metric (km/kg). false until synced.
     pub imperial_units: bool,
+}
+
+impl HealthProfile {
+    /// Render the profile as a `a{sv}` map keyed by field name for D-Bus.
+    fn to_dbus_map(self) -> HashMap<String, OwnedValue> {
+        fn val(v: impl Into<Value<'static>>) -> OwnedValue {
+            OwnedValue::try_from(v.into()).expect("primitive converts to OwnedValue")
+        }
+        HashMap::from([
+            ("height_cm".into(), val(self.height_cm)),
+            ("weight_kg".into(), val(self.weight_kg)),
+            ("age".into(), val(self.age)),
+            ("gender".into(), val(self.gender)),
+            ("tracking_enabled".into(), val(self.tracking_enabled)),
+            ("activity_insights_enabled".into(), val(self.activity_insights_enabled)),
+            ("sleep_insights_enabled".into(), val(self.sleep_insights_enabled)),
+            ("hrm_enabled".into(), val(self.hrm_enabled)),
+            ("hrm_measurement_interval".into(), val(self.hrm_measurement_interval)),
+            ("hrm_activity_tracking".into(), val(self.hrm_activity_tracking)),
+            ("resting_hr".into(), val(self.resting_hr)),
+            ("elevated_hr".into(), val(self.elevated_hr)),
+            ("max_hr".into(), val(self.max_hr)),
+            ("hr_zone1_threshold".into(), val(self.hr_zone1_threshold)),
+            ("hr_zone2_threshold".into(), val(self.hr_zone2_threshold)),
+            ("hr_zone3_threshold".into(), val(self.hr_zone3_threshold)),
+            ("imperial_units".into(), val(self.imperial_units)),
+        ])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -452,8 +482,9 @@ impl CobbleDaemon {
     /// Return the last health profile (height/weight/age/gender/HRM) the watch
     /// synced. Fails if no profile has been received yet this session — call
     /// `FetchHealthParams` (or wait for the on-connect sync) first.
-    fn get_health_profile(&self) -> Result<HealthProfile, DaemonError> {
+    fn get_health_profile(&self) -> Result<HashMap<String, OwnedValue>, DaemonError> {
         Self::merged_profile(&self.state.lock().unwrap())
+            .map(HealthProfile::to_dbus_map)
             .ok_or_else(|| DaemonError::Failed("no health profile synced yet".into()))
     }
 
@@ -603,7 +634,7 @@ impl CobbleDaemon {
     #[zbus(signal)]
     pub async fn health_profile_received(
         signal_emitter: &SignalEmitter<'_>,
-        profile: HealthProfile,
+        profile: HashMap<String, OwnedValue>,
     ) -> zbus::Result<()>;
 
     /// Emitted for each general watch setting (db 12) as the watch syncs it.
@@ -685,21 +716,21 @@ pub async fn run_signal_emitter(
             }
             DaemonEvent::HealthProfile(prefs) => {
                 let profile = daemon.cache_health_profile(prefs);
-                let _ = CobbleDaemon::health_profile_received(emitter, profile).await;
+                let _ = CobbleDaemon::health_profile_received(emitter, profile.to_dbus_map()).await;
             }
             DaemonEvent::HealthHrm(hrm) => {
                 if let Some(profile) = daemon.cache_hrm(hrm) {
-                    let _ = CobbleDaemon::health_profile_received(emitter, profile).await;
+                    let _ = CobbleDaemon::health_profile_received(emitter, profile.to_dbus_map()).await;
                 }
             }
             DaemonEvent::HealthHeartRate(hr) => {
                 if let Some(profile) = daemon.cache_heart_rate(hr) {
-                    let _ = CobbleDaemon::health_profile_received(emitter, profile).await;
+                    let _ = CobbleDaemon::health_profile_received(emitter, profile.to_dbus_map()).await;
                 }
             }
             DaemonEvent::HealthUnits(imperial) => {
                 if let Some(profile) = daemon.cache_units(imperial) {
-                    let _ = CobbleDaemon::health_profile_received(emitter, profile).await;
+                    let _ = CobbleDaemon::health_profile_received(emitter, profile.to_dbus_map()).await;
                 }
             }
             DaemonEvent::WatchSetting { key, value } => {
