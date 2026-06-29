@@ -46,6 +46,11 @@ use crate::{
             DATALOG_CLOSE, DATALOG_OPENSESSION, DATALOG_SENDDATA, DATALOG_TIMEOUT,
         },
         health::{build_activate_health_blob, build_health_sync_request, build_hrm_blob},
+        music::{
+            build_update_current_track, build_update_play_state, build_update_player_info,
+            build_update_volume, parse_music_command, MusicAction, MusicPlaybackState,
+            MusicRepeat, MusicShuffle,
+        },
         phone_version::build_phone_version_response,
         ping::{build_pong, parse_ping},
         reset::{build_reset, ResetCommand},
@@ -85,6 +90,8 @@ pub type WatchPrefHandler = Arc<dyn Fn(u8, String, Vec<u8>) + Send + Sync + 'sta
 pub type BatteryHandler = Arc<dyn Fn(u8) + Send + Sync + 'static>;
 /// Handler called when an app opens/closes on the watch: `(app_uuid, running)`.
 pub type AppRunStateHandler = Arc<dyn Fn(String, bool) + Send + Sync + 'static>;
+/// Handler called with a media-control action the watch sent (play/pause/next/…).
+pub type MusicActionHandler = Arc<dyn Fn(MusicAction) + Send + Sync + 'static>;
 
 /// A decoded watch screenshot: RGBA8888 pixels, row-major (`width*height*4` bytes).
 #[derive(Debug, Clone)]
@@ -125,6 +132,7 @@ struct PebbleInner {
     /// Latest watch battery percentage (0–100); `None` until first read.
     battery_level: Option<u8>,
     app_run_state_handlers: Vec<AppRunStateHandler>,
+    music_action_handlers: Vec<MusicActionHandler>,
     /// In-flight screenshot reassembly, if a `take_screenshot` is awaiting.
     screenshot: Option<ScreenshotAccumulator>,
     /// Monotonic id assigned to each screenshot request.
@@ -159,6 +167,7 @@ impl PebbleInner {
             battery_handlers: Vec::new(),
             battery_level: None,
             app_run_state_handlers: Vec::new(),
+            music_action_handlers: Vec::new(),
             screenshot: None,
             screenshot_seq: 0,
             pending: HashMap::new(),
@@ -258,6 +267,12 @@ impl Pebble {
     /// `(app_uuid, running)` where `running` is true on launch, false on exit.
     pub fn on_app_run_state(&self, handler: AppRunStateHandler) {
         self.inner.lock().unwrap().app_run_state_handlers.push(handler);
+    }
+
+    /// Register a handler called with each media-control action the watch sends
+    /// (play/pause/next/volume/get-current-track).
+    pub fn on_music_action(&self, handler: MusicActionHandler) {
+        self.inner.lock().unwrap().music_action_handlers.push(handler);
     }
 
     pub fn on_watch_pref(&self, handler: WatchPrefHandler) {
@@ -845,6 +860,61 @@ impl Pebble {
         self.send_pebble(Endpoint::Reset, &build_reset(command))
     }
 
+    // ---- Music (push now-playing to the watch) ----
+
+    /// Tell the watch which media app is playing.
+    pub async fn update_music_player_info(&self, pkg: &str, name: &str) -> Result<(), PebbleError> {
+        debug!("music: player info pkg={pkg:?} name={name:?}");
+        self.send_pebble(Endpoint::MusicControl, &build_update_player_info(pkg, name))
+    }
+
+    /// Push the current track. `track_length_ms`/`track_count`/`current_track`
+    /// are optional but should be all-or-nothing (provide a contiguous prefix).
+    pub async fn update_music_track(
+        &self,
+        artist: &str,
+        album: &str,
+        title: &str,
+        track_length_ms: Option<u32>,
+        track_count: Option<u32>,
+        current_track: Option<u32>,
+    ) -> Result<(), PebbleError> {
+        debug!("music: track artist={artist:?} album={album:?} title={title:?}");
+        self.send_pebble(
+            Endpoint::MusicControl,
+            &build_update_current_track(
+                artist,
+                album,
+                title,
+                track_length_ms,
+                track_count,
+                current_track,
+            ),
+        )
+    }
+
+    /// Push playback state (state, position, play-rate %, shuffle, repeat).
+    pub async fn update_music_play_state(
+        &self,
+        state: MusicPlaybackState,
+        track_position_ms: u32,
+        play_rate_pct: u32,
+        shuffle: MusicShuffle,
+        repeat: MusicRepeat,
+    ) -> Result<(), PebbleError> {
+        debug!("music: play state={state:?} pos={track_position_ms}ms rate={play_rate_pct}");
+        self.send_pebble(
+            Endpoint::MusicControl,
+            &build_update_play_state(state, track_position_ms, play_rate_pct, shuffle, repeat),
+        )
+    }
+
+    /// Push the current volume (0–100).
+    pub async fn update_music_volume(&self, volume_percent: u8) -> Result<(), PebbleError> {
+        debug!("music: volume={volume_percent}");
+        self.send_pebble(Endpoint::MusicControl, &build_update_volume(volume_percent))
+    }
+
     pub async fn update_time(&self) -> Result<(), PebbleError> {
         if !self.is_connected() {
             return Err(PebbleError::NotConnected);
@@ -1165,6 +1235,16 @@ fn on_pebble_message(message: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
                 let handlers: Vec<_> = inner.lock().unwrap().app_run_state_handlers.clone();
                 for h in handlers {
                     h(uuid.clone(), running);
+                }
+            }
+        }
+        Some(Endpoint::MusicControl) => {
+            // The watch's media-key presses (play/pause/next/volume/get-track).
+            if let Some(action) = parse_music_command(payload) {
+                debug!("music action from watch: {}", action.as_str());
+                let handlers: Vec<_> = inner.lock().unwrap().music_action_handlers.clone();
+                for h in handlers {
+                    h(action);
                 }
             }
         }

@@ -18,6 +18,7 @@ pub use endpoints::health::{
     parse_units_distance, ActivityPreferences, HeartRatePreferences, HrMonitoringInterval,
     HrmPreferences,
 };
+pub use endpoints::music::{MusicAction, MusicPlaybackState, MusicRepeat, MusicShuffle};
 pub use endpoints::reset::ResetCommand;
 pub use endpoints::screenshot::ScreenshotVersion;
 pub use endpoints::system::{
@@ -29,5 +30,5 @@ pub use endpoints::Endpoint;
 pub use error::PebbleError;
 pub use pebble::{
     AckHandler, AppMessageHandler, AppRunStateHandler, BatteryHandler, HealthDataHandler,
-    NackHandler, Pebble, Screenshot, WatchPrefHandler,
+    MusicActionHandler, NackHandler, Pebble, Screenshot, WatchPrefHandler,
 };

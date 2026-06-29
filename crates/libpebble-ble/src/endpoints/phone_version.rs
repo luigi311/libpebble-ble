@@ -53,7 +53,11 @@ mod protocol_caps {
 }
 
 pub fn build_phone_version_response() -> Vec<u8> {
-    let platform_flags = remote_os::LINUX
+    // Advertise as Android: the watch firmware's companion code paths target
+    // iOS (ANCS) and Android (the BlobDB/companion protocol we implement).
+    // Reporting LINUX can drop us into a degraded mode where the watch doesn't
+    // think we support all the features and ignores them
+    let platform_flags = remote_os::ANDROID
         | platform_caps::TELEPHONY
         | platform_caps::SMS
         | platform_caps::GPS

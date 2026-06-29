@@ -10,6 +10,7 @@ pub mod app_run_state;
 pub mod blob_db;
 pub mod datalog;
 pub mod health;
+pub mod music;
 pub mod phone_version;
 pub mod ping;
 pub mod reset;
@@ -30,6 +31,7 @@ pub enum Endpoint {
     WatchVersion = 16,
     PhoneVersion = 17,
     SystemMessage = 18,
+    MusicControl = 32,
     AppMessage = 48,
     AppRunState = 52,
     /// Health sync trigger — phone sends request, watch replies with ACK then
@@ -55,6 +57,7 @@ impl Endpoint {
             16 => Some(Self::WatchVersion),
             17 => Some(Self::PhoneVersion),
             18 => Some(Self::SystemMessage),
+            32 => Some(Self::MusicControl),
             48 => Some(Self::AppMessage),
             52 => Some(Self::AppRunState),
             911 => Some(Self::HealthSync),

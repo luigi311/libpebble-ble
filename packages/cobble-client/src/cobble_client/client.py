@@ -37,6 +37,8 @@ WatchSettingHandler = Callable[[str, object], None]
 BatteryHandler = Callable[[int | None], None]
 # app uuid, running (True on launch, False on exit)
 AppRunStateHandler = Callable[[str, bool], None]
+# media-control action name from the watch (play/pause/next_track/…)
+MusicActionHandler = Callable[[str], None]
 
 _DBUS = "org.freedesktop.DBus"
 _DBUS_PATH = "/org/freedesktop/DBus"
@@ -79,6 +81,7 @@ class CobbleClient:
         self._watch_setting_handlers: list[WatchSettingHandler] = []
         self._battery_handlers: list[BatteryHandler] = []
         self._app_run_state_handlers: list[AppRunStateHandler] = []
+        self._music_action_handlers: list[MusicActionHandler] = []
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -128,6 +131,7 @@ class CobbleClient:
         self._iface.on_watch_setting_received(self._dispatch_watch_setting)
         self._iface.on_battery_changed(self._dispatch_battery)
         self._iface.on_app_run_state_changed(self._dispatch_app_run_state)
+        self._iface.on_music_action_received(self._dispatch_music_action)
 
     async def close(self) -> None:
         bus, self._bus = self._bus, None
@@ -355,6 +359,63 @@ class CobbleClient:
             raise self._translate(e) from e
         return bytes(data)
 
+    async def set_music_player_info(self, pkg: str, name: str) -> None:
+        """Tell the watch which media app is the now-playing source."""
+        self._require_iface()
+        try:
+            await self._iface.call_set_music_player_info(pkg, name)
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def set_music_track(
+        self,
+        artist: str,
+        album: str,
+        title: str,
+        *,
+        track_length_ms: int = 0,
+        track_count: int = 0,
+        track_number: int = 0,
+    ) -> None:
+        """Push the current track metadata to the watch."""
+        self._require_iface()
+        try:
+            await self._iface.call_set_music_track(
+                artist, album, title, track_length_ms, track_count, track_number
+            )
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def set_music_playback_state(
+        self,
+        *,
+        state: int,
+        track_position_ms: int = 0,
+        play_rate_pct: int = 100,
+        shuffle: int = 0,
+        repeat: int = 0,
+    ) -> None:
+        """Push playback state to the watch.
+
+        state: 0=paused 1=playing 2=rewinding 3=fast-forwarding 4=unknown.
+        shuffle: 0=unknown 1=off 2=on. repeat: 0=unknown 1=off 2=one 3=all.
+        """
+        self._require_iface()
+        try:
+            await self._iface.call_set_music_playback_state(
+                state, track_position_ms, play_rate_pct, shuffle, repeat
+            )
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def set_music_volume(self, volume_percent: int) -> None:
+        """Push the current volume (0-100) to the watch."""
+        self._require_iface()
+        try:
+            await self._iface.call_set_music_volume(volume_percent)
+        except DBusError as e:
+            raise self._translate(e) from e
+
     async def reboot_watch(self) -> None:
         """Reboot the watch. It drops the link and the daemon reconnects."""
         self._require_iface()
@@ -503,6 +564,10 @@ class CobbleClient:
         self._battery_handlers.append(fn)
         return fn
 
+    def on_music_action(self, fn: MusicActionHandler) -> MusicActionHandler:
+        self._music_action_handlers.append(fn)
+        return fn
+
     def on_app_run_state(self, fn: AppRunStateHandler) -> AppRunStateHandler:
         self._app_run_state_handlers.append(fn)
         return fn
@@ -562,6 +627,10 @@ class CobbleClient:
     def _dispatch_app_run_state(self, uuid: str, running: bool) -> None:
         for h in self._app_run_state_handlers:
             _safe(h, uuid, bool(running))
+
+    def _dispatch_music_action(self, action: str) -> None:
+        for h in self._music_action_handlers:
+            _safe(h, action)
 
     # ------------------------------------------------------------------ #
     def _require_iface(self):

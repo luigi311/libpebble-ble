@@ -53,6 +53,8 @@ crates/libpebble-ble/src/
                        zones, unitsDistance, and the HealthSync request.
     watch_pref.rs      General watch-settings (WatchPrefs) typed registry —
                        decode db-12 keys (backlight, clock, vibration, …).
+    music.rs           Music control (32): push now-playing/playback/volume to
+                       the watch; parse inbound media-key actions.
     phone_version.rs   Phone capability advertisement (endpoint 17).
     ping.rs            Ping/Pong (endpoint 2001).
     system.rs          WatchVersion (16), SystemMessage (18), and factory
@@ -213,6 +215,10 @@ Object path: `/org/cobble/Daemon` — session bus.
 | Method | `GetWatchVersion` | `() → a{sv}` | firmware version, board, serial, BT address, language, capabilities, platform |
 | Method | `GetWatchColor` | `() → a{sv}` | watch color/variant (protocol\_number, js\_name, description, watch\_type, supports\_hrm) |
 | Method | `Screenshot` | `() → ay` | capture the watch screen as PNG bytes |
+| Method | `SetMusicPlayerInfo` | `(s, s)` | pkg, name — which media app is playing |
+| Method | `SetMusicTrack` | `(s, s, s, u, u, u)` | artist, album, title, track\_length\_ms, track\_count, track\_number |
+| Method | `SetMusicPlaybackState` | `(y, u, u, y, y)` | state (0=paused 1=playing 2=rewind 3=ffwd 4=unknown), track\_position\_ms, play\_rate\_pct, shuffle (0=unknown 1=off 2=on), repeat (0=unknown 1=off 2=one 3=all) |
+| Method | `SetMusicVolume` | `(y)` | volume\_percent (0–100) |
 | Method | `RebootWatch` | `()` | reboot the watch |
 | Method | `ResetIntoRecovery` | `()` | reboot into recovery (PRF) firmware |
 | Method | `CreateCoreDump` | `()` | trigger a watch core dump |
@@ -230,6 +236,7 @@ Object path: `/org/cobble/Daemon` — session bus.
 | Signal | `WatchSettingReceived` | `(s, v)` | key, value — emitted per general watch setting as it syncs |
 | Signal | `BatteryChanged` | `(n)` | watch battery percentage (-1 = unknown) |
 | Signal | `AppRunStateChanged` | `(s, b)` | app uuid, running — emitted when an app opens/closes on the watch |
+| Signal | `MusicActionReceived` | `(s)` | media-control action from the watch (play, pause, play\_pause, next\_track, previous\_track, volume\_up, volume\_down, get\_current\_track) |
 
 AppMessage values cross D-Bus as `(tag, variant)` pairs where tag is one of
 `u8 u16 u32 i8 i16 i32 uint int str bytes`. The Python client handles all
@@ -265,8 +272,9 @@ consume raw records without reading the database directly.
 - [x] Screenshot (capture watch screen, decoded to RGBA pixels; PNG encoding lives in cobbled)
 - [x] Device management (reboot, recovery, factory reset, core dump, forget/unpair)
 - [ ] Music
-  - [ ] Playing status
-  - [ ] Controls
+  - [x] Push now-playing / playback state / volume to the watch
+  - [x] Parse inbound control actions (play/pause/next/volume)
+  - [ ] Act on control actions (needs MPRIS wiring)
 - [ ] PBW install
 
 ### cobbled (Daemon)
@@ -281,7 +289,7 @@ consume raw records without reading the database directly.
   - [x] External applications
 - [x] Health (data sync + profile/settings read)
 - [x] Watch info + device management (version, color, battery, screenshot, reboot/reset/forget)
-- [ ] Music
+- [ ] Music (push now-playing to watch; surfaces watch control actions — not acted on yet)
 - [x] Weather
 
 Every libpebble-ble capability is exposed over D-Bus and supported by the
