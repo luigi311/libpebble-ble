@@ -239,7 +239,7 @@ class CobbleClient:
     ) -> None:
         """Write the health user profile to the watch and trigger a DataLog sync.
 
-        gender: 0 = male, 1 = female.
+        gender: 0 = female, 1 = male, 2 = other (libpebble3 HealthGender).
         """
         self._require_iface()
         try:

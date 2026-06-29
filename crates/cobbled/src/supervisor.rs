@@ -5,7 +5,10 @@
 
 use std::sync::Arc;
 
-use libpebble_ble::{HealthDataHandler, Pebble};
+use libpebble_ble::{
+    parse_activity_preferences, parse_heart_rate_preferences, parse_hrm_preferences,
+    parse_units_distance, HealthDataHandler, Pebble, WatchPrefHandler,
+};
 use tracing::{debug, info, warn};
 
 use crate::service::{CobbleDaemon, DaemonEvent};
@@ -37,6 +40,55 @@ pub async fn run_supervisor(daemon: CobbleDaemon) {
             pebble.on_health(Arc::new(move |batch| {
                 let _ = tx.send(DaemonEvent::HealthData(batch));
             }) as HealthDataHandler);
+
+            // The watch syncs the health profile through the WatchPrefs DB
+            // (db 12), keyed by name — HealthParams (db 7) is NotSupported for
+            // MarkAllDirty. Decode the health-related keys into events; log the rest.
+            let tx = event_tx.clone();
+            pebble.on_watch_pref(Arc::new(move |db: u8, key: String, value: Vec<u8>| {
+                let _ = db; // keep for parity with the handler signature
+                match key.as_str() {
+                    "activityPreferences" => match parse_activity_preferences(&value) {
+                        Some(p) => {
+                            info!(
+                                "watch health profile: height={}cm weight={}kg age={} gender={} \
+                                 tracking={} activity_insights={} sleep_insights={}",
+                                p.height_cm, p.weight_kg, p.age, p.gender,
+                                p.tracking_enabled, p.activity_insights_enabled, p.sleep_insights_enabled,
+                            );
+                            let _ = tx.send(DaemonEvent::HealthProfile(p));
+                        }
+                        None => warn!("activityPreferences blob malformed: {value:02x?}"),
+                    },
+                    "hrmPreferences" => {
+                        if let Some(hrm) = parse_hrm_preferences(&value) {
+                            info!(
+                                "watch health profile: hrm_enabled={} interval={:?} activity_tracking={:?}",
+                                hrm.enabled, hrm.measurement_interval, hrm.activity_tracking_enabled,
+                            );
+                            let _ = tx.send(DaemonEvent::HealthHrm(hrm));
+                        }
+                    }
+                    "heartRatePreferences" => match parse_heart_rate_preferences(&value) {
+                        Some(hr) => {
+                            info!(
+                                "watch HR prefs: resting={} elevated={} max={} zones={}/{}/{}",
+                                hr.resting_hr, hr.elevated_hr, hr.max_hr,
+                                hr.zone1_threshold, hr.zone2_threshold, hr.zone3_threshold,
+                            );
+                            let _ = tx.send(DaemonEvent::HealthHeartRate(hr));
+                        }
+                        None => warn!("heartRatePreferences blob malformed: {value:02x?}"),
+                    },
+                    "unitsDistance" => {
+                        if let Some(imperial) = parse_units_distance(&value) {
+                            info!("watch health profile: imperial_units={imperial}");
+                            let _ = tx.send(DaemonEvent::HealthUnits(imperial));
+                        }
+                    }
+                    other => debug!("watch pref push db={db} key={other:?} ({} bytes)", value.len()),
+                }
+            }) as WatchPrefHandler);
         }
 
         match pebble.connect().await {
