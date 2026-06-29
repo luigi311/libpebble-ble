@@ -12,6 +12,8 @@ pub mod datalog;
 pub mod health;
 pub mod phone_version;
 pub mod ping;
+pub mod reset;
+pub mod system;
 pub mod time;
 pub mod watch_pref;
 
@@ -24,6 +26,7 @@ use uuid::Uuid;
 #[repr(u16)]
 pub enum Endpoint {
     Time = 11,
+    WatchVersion = 16,
     PhoneVersion = 17,
     SystemMessage = 18,
     AppMessage = 48,
@@ -34,6 +37,9 @@ pub enum Endpoint {
     BlobDb = 0xB1DB,
     BlobDbV2 = 0xB2DB,
     Ping = 2001,
+    Reset = 2003,
+    /// Factory registry (watch color/model lookups).
+    FactoryRegistry = 5001,
     AppFetch = 6001,
     /// Watch-initiated logging sessions (health, analytics). Sessions are opened,
     /// data is streamed, then closed. We ACK each message.
@@ -44,6 +50,7 @@ impl Endpoint {
     pub fn from_u16(v: u16) -> Option<Self> {
         match v {
             11 => Some(Self::Time),
+            16 => Some(Self::WatchVersion),
             17 => Some(Self::PhoneVersion),
             18 => Some(Self::SystemMessage),
             48 => Some(Self::AppMessage),
@@ -52,6 +59,8 @@ impl Endpoint {
             0xB1DB => Some(Self::BlobDb),
             0xB2DB => Some(Self::BlobDbV2),
             2001 => Some(Self::Ping),
+            2003 => Some(Self::Reset),
+            5001 => Some(Self::FactoryRegistry),
             6001 => Some(Self::AppFetch),
             6778 => Some(Self::DataLog),
             _ => None,

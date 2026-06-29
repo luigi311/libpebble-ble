@@ -298,6 +298,67 @@ class CobbleClient:
             raise self._translate(e) from e
         return {k: _unwrap(v) for k, v in raw.items()}
 
+    async def get_watch_version(self) -> dict:
+        """Return the watch's version info as a dict.
+
+        Keys: firmware_version/major/minor/patch/suffix/git_hash, is_recovery,
+        recovery_version (if present), board, serial, bt_address, bootloader/
+        resource timestamps, language(+version), hardware_platform,
+        platform_revision, watch_type, capabilities, is_unfaithful, and
+        health_insights_version/javascript_version (if present).
+        """
+        self._require_iface()
+        try:
+            raw = await self._iface.call_get_watch_version()
+        except DBusError as e:
+            raise self._translate(e) from e
+        return {k: _unwrap(v) for k, v in raw.items()}
+
+    async def get_watch_color(self) -> dict:
+        """Return the watch's color/variant as a dict.
+
+        Keys: protocol_number, js_name, description, watch_type, supports_hrm.
+        Raises if the watch reports an error or an unknown color.
+        """
+        self._require_iface()
+        try:
+            raw = await self._iface.call_get_watch_color()
+        except DBusError as e:
+            raise self._translate(e) from e
+        return {k: _unwrap(v) for k, v in raw.items()}
+
+    async def reboot_watch(self) -> None:
+        """Reboot the watch. It drops the link and the daemon reconnects."""
+        self._require_iface()
+        try:
+            await self._iface.call_reboot_watch()
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def reset_into_recovery(self) -> None:
+        """Reboot the watch into its recovery (PRF) firmware."""
+        self._require_iface()
+        try:
+            await self._iface.call_reset_into_recovery()
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def create_core_dump(self) -> None:
+        """Trigger a core dump on the watch."""
+        self._require_iface()
+        try:
+            await self._iface.call_create_core_dump()
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def factory_reset(self) -> None:
+        """Factory-reset the watch. DESTRUCTIVE: wipes all data and unpairs."""
+        self._require_iface()
+        try:
+            await self._iface.call_factory_reset()
+        except DBusError as e:
+            raise self._translate(e) from e
+
     async def push_weather(
         self,
         location_name: str,

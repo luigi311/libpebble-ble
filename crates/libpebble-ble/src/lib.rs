@@ -18,6 +18,11 @@ pub use endpoints::health::{
     parse_units_distance, ActivityPreferences, HeartRatePreferences, HrMonitoringInterval,
     HrmPreferences,
 };
+pub use endpoints::reset::ResetCommand;
+pub use endpoints::system::{
+    hardware_platform, watch_color, FirmwareVersion, WatchColorInfo, WatchFirmwareVersion,
+    WatchType, WatchVersionInfo,
+};
 pub use endpoints::watch_pref::{decode_watch_pref, WatchPrefType, WatchPrefValue};
 pub use endpoints::Endpoint;
 pub use error::PebbleError;
