@@ -19,6 +19,12 @@
 //!     FetchHealthParams()
 //!     GetHealthProfile() -> a{sv}  health profile keyed by field name (height_cm, weight_kg, age, gender, …, imperial_units)
 //!     GetWatchSettings() -> a{sv}  general watch settings (db 12), key -> bool/uint32/string
+//!     GetWatchVersion() -> a{sv}  firmware/board/serial/BT/language/capabilities/platform
+//!     GetWatchColor() -> a{sv}  watch color/variant (protocol_number, js_name, description, watch_type, supports_hrm)
+//!     RebootWatch()
+//!     ResetIntoRecovery()
+//!     CreateCoreDump()
+//!     FactoryReset(b confirm)  (DESTRUCTIVE; requires confirm=true)
 //!     PushWeather(ay location_key, s location_name, s forecast_short, n current_temp, y current_weather, n today_high, n today_low, y tomorrow_weather, n tomorrow_high, n tomorrow_low, b is_current_location)
 //!     ReprocessHealthData()
 //!
@@ -41,7 +47,7 @@ use std::{
 
 use libpebble_ble::{
     ActivityPreferences, AppMessageValue, DatalogData, HeartRatePreferences, HrmPreferences,
-    Pebble, WatchPrefValue, WeatherType,
+    Pebble, WatchColorInfo, WatchPrefValue, WatchVersionInfo, WeatherType,
 };
 
 use crate::db::HealthDb;
@@ -101,6 +107,60 @@ fn watch_pref_owned_value(v: &WatchPrefValue) -> OwnedValue {
         WatchPrefValue::Text(s) => Value::from(s.clone()),
     };
     OwnedValue::try_from(value).expect("primitive value converts to OwnedValue")
+}
+
+/// Wrap a primitive into an `OwnedValue` for an `a{sv}` map entry.
+fn dbus_val(v: impl Into<Value<'static>>) -> OwnedValue {
+    OwnedValue::try_from(v.into()).expect("primitive converts to OwnedValue")
+}
+
+/// Render watch version info as a self-describing `a{sv}` map. Optional fields
+/// (recovery firmware, health/JS versions) are omitted when absent.
+fn watch_version_to_map(info: &WatchVersionInfo) -> HashMap<String, OwnedValue> {
+    let r = &info.running;
+    let mut m: HashMap<String, OwnedValue> = HashMap::from([
+        ("firmware_version".into(), dbus_val(r.string_version.clone())),
+        ("firmware_major".into(), dbus_val(r.major)),
+        ("firmware_minor".into(), dbus_val(r.minor)),
+        ("firmware_patch".into(), dbus_val(r.patch)),
+        ("firmware_suffix".into(), dbus_val(r.suffix.clone())),
+        ("firmware_git_hash".into(), dbus_val(r.git_hash.clone())),
+        ("is_recovery".into(), dbus_val(r.is_recovery)),
+        ("bootloader_timestamp".into(), dbus_val(info.bootloader_timestamp)),
+        ("board".into(), dbus_val(info.board.clone())),
+        ("serial".into(), dbus_val(info.serial.clone())),
+        ("bt_address".into(), dbus_val(info.bt_address.clone())),
+        ("resource_crc".into(), dbus_val(info.resource_crc)),
+        ("resource_timestamp".into(), dbus_val(info.resource_timestamp)),
+        ("language".into(), dbus_val(info.language.clone())),
+        ("language_version".into(), dbus_val(info.language_version)),
+        ("hardware_platform".into(), dbus_val(info.hardware_platform)),
+        ("platform_revision".into(), dbus_val(info.platform_revision())),
+        ("watch_type".into(), dbus_val(info.watch_type().codename())),
+        ("capabilities".into(), dbus_val(info.capabilities)),
+        ("is_unfaithful".into(), dbus_val(info.is_unfaithful)),
+    ]);
+    if let Some(recovery) = &info.recovery {
+        m.insert("recovery_version".into(), dbus_val(recovery.string_version.clone()));
+    }
+    if let Some(v) = info.health_insights_version {
+        m.insert("health_insights_version".into(), dbus_val(v));
+    }
+    if let Some(v) = info.javascript_version {
+        m.insert("javascript_version".into(), dbus_val(v));
+    }
+    m
+}
+
+/// Render watch color info as a self-describing `a{sv}` map.
+fn watch_color_to_map(c: &WatchColorInfo) -> HashMap<String, OwnedValue> {
+    HashMap::from([
+        ("protocol_number".into(), dbus_val(c.protocol_number)),
+        ("js_name".into(), dbus_val(c.js_name)),
+        ("description".into(), dbus_val(c.description)),
+        ("watch_type".into(), dbus_val(c.watch_type.codename())),
+        ("supports_hrm".into(), dbus_val(c.supports_hrm)),
+    ])
 }
 
 /// The watch-side health profile, as synced back over BlobDB2 (WatchPrefs).
@@ -499,6 +559,63 @@ impl CobbleDaemon {
             .iter()
             .map(|(k, v)| (k.clone(), watch_pref_owned_value(v)))
             .collect()
+    }
+
+    /// Query the watch's version info (firmware, board, serial, BT address,
+    /// language, capabilities, platform) as a key -> variant map.
+    async fn get_watch_version(&self) -> Result<HashMap<String, OwnedValue>, DaemonError> {
+        let pebble = self.require_pebble()?;
+        let info = pebble
+            .get_watch_version()
+            .await
+            .map_err(|e| DaemonError::Failed(e.to_string()))?;
+        Ok(watch_version_to_map(&info))
+    }
+
+    /// Query the watch's manufacturing color/variant as a key -> variant map.
+    /// Fails if the watch reports an error or an unknown color.
+    async fn get_watch_color(&self) -> Result<HashMap<String, OwnedValue>, DaemonError> {
+        let pebble = self.require_pebble()?;
+        match pebble
+            .get_watch_color()
+            .await
+            .map_err(|e| DaemonError::Failed(e.to_string()))?
+        {
+            Some(color) => Ok(watch_color_to_map(color)),
+            None => Err(DaemonError::Failed("watch reported an unknown color".into())),
+        }
+    }
+
+    /// Reboot the watch. It drops the link and the daemon reconnects.
+    async fn reboot_watch(&self) -> Result<(), DaemonError> {
+        let pebble = self.require_pebble()?;
+        pebble.reboot_watch().map_err(|e| DaemonError::Failed(e.to_string()))
+    }
+
+    /// Reboot the watch into its recovery (PRF) firmware.
+    async fn reset_into_recovery(&self) -> Result<(), DaemonError> {
+        let pebble = self.require_pebble()?;
+        pebble.reset_into_recovery().map_err(|e| DaemonError::Failed(e.to_string()))
+    }
+
+    /// Trigger a core dump on the watch.
+    async fn create_core_dump(&self) -> Result<(), DaemonError> {
+        let pebble = self.require_pebble()?;
+        pebble.create_core_dump().map_err(|e| DaemonError::Failed(e.to_string()))
+    }
+
+    /// Factory-reset the watch. DESTRUCTIVE: wipes all watch data and unpairs.
+    /// Requires `confirm = true` so an accidental/no-arg call can't wipe the watch.
+    async fn factory_reset(&self, confirm: bool) -> Result<(), DaemonError> {
+        if !confirm {
+            return Err(DaemonError::Failed(
+                "factory_reset is destructive (wipes the watch and unpairs it); \
+                 call with confirm=true to proceed"
+                    .into(),
+            ));
+        }
+        let pebble = self.require_pebble()?;
+        pebble.factory_reset().map_err(|e| DaemonError::Failed(e.to_string()))
     }
 
     /// Push weather data to the Pebble built-in weather app.

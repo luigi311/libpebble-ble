@@ -48,6 +48,12 @@ use crate::{
         health::{build_activate_health_blob, build_health_sync_request, build_hrm_blob},
         phone_version::build_phone_version_response,
         ping::{build_pong, parse_ping},
+        reset::{build_reset, ResetCommand},
+        system::{
+            build_watch_color_request, build_watch_version_request, parse_factory_data_response,
+            parse_watch_color, parse_watch_version_response, system_message_type, WatchColorInfo,
+            WatchVersionInfo, WATCH_VERSION_RESPONSE,
+        },
         time::build_set_utc,
         pebble_pack, pebble_unpack, Endpoint,
     },
@@ -82,6 +88,12 @@ struct PebbleInner {
     pending: HashMap<u8, oneshot::Sender<bool>>,
     /// BlobDB2 token → future resolved when watch sends the matching response
     blobdb2_pending: HashMap<u16, oneshot::Sender<BlobDB2Incoming>>,
+    /// Futures awaiting a WatchVersionResponse (endpoint 16). All are resolved
+    /// when the next response arrives.
+    watch_version_pending: Vec<oneshot::Sender<WatchVersionInfo>>,
+    /// Futures awaiting a factory-registry watch-color response (endpoint 5001).
+    /// `None` is sent on an error reply or unknown color.
+    watch_color_pending: Vec<oneshot::Sender<Option<&'static WatchColorInfo>>>,
     txn: u8,
     /// Handle to the GATT server send channel (set once server is started).
     gatt_server: Option<PebbleGattServerHandle>,
@@ -101,6 +113,8 @@ impl PebbleInner {
             watch_pref_handlers: Vec::new(),
             pending: HashMap::new(),
             blobdb2_pending: HashMap::new(),
+            watch_version_pending: Vec::new(),
+            watch_color_pending: Vec::new(),
             txn: 0,
             gatt_server: None,
             datalog_sessions: HashMap::new(),
@@ -563,6 +577,10 @@ impl Pebble {
         let _ = self.connected_tx.send(false);
         let mut inner = self.inner.lock().unwrap();
         inner.gatt_server = None;
+        // Fail any in-flight watch-info requests immediately instead of leaving
+        // their callers pending until the per-request timeout fires.
+        inner.watch_version_pending.clear();
+        inner.watch_color_pending.clear();
     }
 
     pub async fn forget(&self) -> Result<(), PebbleError> {
@@ -576,6 +594,86 @@ impl Pebble {
     }
 
     // ---- public API ----
+
+    /// Query the watch's version info (endpoint 16): firmware versions, board,
+    /// serial, BT address, language, and protocol capabilities. Times out after
+    /// 10s if the watch doesn't reply.
+    pub async fn get_watch_version(&self) -> Result<WatchVersionInfo, PebbleError> {
+        if !self.is_connected() {
+            return Err(PebbleError::NotConnected);
+        }
+        let (tx, rx) = oneshot::channel::<WatchVersionInfo>();
+        self.inner.lock().unwrap().watch_version_pending.push(tx);
+        let result = match self.send_pebble(Endpoint::WatchVersion, &build_watch_version_request()) {
+            Err(e) => {
+                drop(rx); // cancel our waiter
+                Err(e)
+            }
+            Ok(()) => match timeout(Duration::from_secs(10), rx).await {
+                Ok(Ok(info)) => Ok(info),
+                _ => Err(PebbleError::Other("watch version request timed out".into())),
+            },
+        };
+        // Drop our now-cancelled waiter (and any other dead ones); live waiters
+        // from concurrent requests are kept.
+        self.inner.lock().unwrap().watch_version_pending.retain(|s| !s.is_closed());
+        result
+    }
+
+    /// Query the watch's manufacturing color/variant (factory registry, endpoint
+    /// 5001). Returns `None` if the watch reports an error or an unknown color.
+    /// Times out after 10s. (libpebble3 bundles this into the version request;
+    /// here it's a separate call.)
+    pub async fn get_watch_color(&self) -> Result<Option<&'static WatchColorInfo>, PebbleError> {
+        if !self.is_connected() {
+            return Err(PebbleError::NotConnected);
+        }
+        let (tx, rx) = oneshot::channel::<Option<&'static WatchColorInfo>>();
+        self.inner.lock().unwrap().watch_color_pending.push(tx);
+        let result = match self.send_pebble(Endpoint::FactoryRegistry, &build_watch_color_request()) {
+            Err(e) => {
+                drop(rx); // cancel our waiter
+                Err(e)
+            }
+            Ok(()) => match timeout(Duration::from_secs(10), rx).await {
+                Ok(Ok(color)) => Ok(color),
+                _ => Err(PebbleError::Other("watch color request timed out".into())),
+            },
+        };
+        self.inner.lock().unwrap().watch_color_pending.retain(|s| !s.is_closed());
+        result
+    }
+
+    /// Reboot the watch (endpoint 2003). The watch drops the BLE link; the
+    /// supervisor will reconnect. Fire-and-forget (no reply).
+    pub fn reboot_watch(&self) -> Result<(), PebbleError> {
+        self.send_reset(ResetCommand::Reset)
+    }
+
+    /// Reboot the watch into its recovery (PRF) firmware (endpoint 2003).
+    pub fn reset_into_recovery(&self) -> Result<(), PebbleError> {
+        self.send_reset(ResetCommand::ResetIntoPrf)
+    }
+
+    /// Trigger a core dump on the watch (endpoint 2003).
+    pub fn create_core_dump(&self) -> Result<(), PebbleError> {
+        self.send_reset(ResetCommand::CoreDump)
+    }
+
+    /// Factory-reset the watch (endpoint 2003). **Destructive** — wipes all
+    /// watch data and unpairs. Fire-and-forget.
+    pub fn factory_reset(&self) -> Result<(), PebbleError> {
+        warn!("sending FACTORY RESET to the watch");
+        self.send_reset(ResetCommand::FactoryReset)
+    }
+
+    fn send_reset(&self, command: ResetCommand) -> Result<(), PebbleError> {
+        if !self.is_connected() {
+            return Err(PebbleError::NotConnected);
+        }
+        debug!("sending reset command {command:?}");
+        self.send_pebble(Endpoint::Reset, &build_reset(command))
+    }
 
     pub async fn update_time(&self) -> Result<(), PebbleError> {
         if !self.is_connected() {
@@ -832,6 +930,45 @@ fn on_pebble_message(message: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
                 }
             }
             debug!("watch requested phone version; replied");
+        }
+        Some(Endpoint::WatchVersion) => {
+            if payload.first() == Some(&WATCH_VERSION_RESPONSE) {
+                match parse_watch_version_response(payload) {
+                    Some(info) => {
+                        debug!(
+                            "watch version: fw={} board={} serial={}",
+                            info.running.string_version, info.board, info.serial
+                        );
+                        let waiters =
+                            std::mem::take(&mut inner.lock().unwrap().watch_version_pending);
+                        for w in waiters {
+                            let _ = w.send(info.clone());
+                        }
+                    }
+                    None => {
+                        warn!("WatchVersion: failed to parse response ({} bytes)", payload.len());
+                        // Fail waiters now rather than letting them time out on a
+                        // response we already know is malformed.
+                        inner.lock().unwrap().watch_version_pending.clear();
+                    }
+                }
+            }
+        }
+        Some(Endpoint::SystemMessage) => {
+            // Firmware-update lifecycle / reconnect control. We don't drive
+            // firmware updates yet; surface the message type for diagnostics.
+            debug!("system message type={:?}", system_message_type(payload));
+        }
+        Some(Endpoint::FactoryRegistry) => {
+            // Factory-registry reply (currently only used for watch color).
+            let color = parse_factory_data_response(payload)
+                .as_deref()
+                .and_then(parse_watch_color);
+            debug!("factory registry: color={:?}", color.map(|c| c.js_name));
+            let waiters = std::mem::take(&mut inner.lock().unwrap().watch_color_pending);
+            for w in waiters {
+                let _ = w.send(color);
+            }
         }
         Some(Endpoint::Ping) => {
             if let Some(cookie) = parse_ping(payload) {
