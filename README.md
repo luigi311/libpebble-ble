@@ -262,7 +262,7 @@ consume raw records without reading the database directly.
   - [x] General settings read (backlight, clock, vibration, quiet time, …)
 - [x] Watch info (firmware version, board, serial, BT address, capabilities, platform, color)
 - [x] Battery level (read + change notifications)
-- [x] Screenshot (capture watch screen as PNG)
+- [x] Screenshot (capture watch screen, decoded to RGBA pixels; PNG encoding lives in cobbled)
 - [x] Device management (reboot, recovery, factory reset, core dump, forget/unpair)
 - [ ] Music
   - [ ] Playing status

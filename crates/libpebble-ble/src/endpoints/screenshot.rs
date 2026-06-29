@@ -84,20 +84,35 @@ pub fn parse_screenshot_header(payload: &[u8]) -> Option<(ScreenshotHeader, &[u8
     ))
 }
 
-/// Bytes of framebuffer expected for a given geometry/version.
-pub fn expected_size(version: ScreenshotVersion, width: u32, height: u32) -> usize {
-    (width as usize * height as usize * version.bits_per_pixel()) / 8
+/// Largest watch dimension we accept. Real Pebbles top out around 200×228;
+/// this leaves margin while rejecting garbage/oversized headers that would
+/// otherwise drive a huge allocation.
+pub const MAX_SCREEN_DIM: u32 = 1024;
+
+/// Validate dimensions and return the expected framebuffer byte count (rows are
+/// byte-aligned). `None` if a dimension is zero or exceeds [`MAX_SCREEN_DIM`].
+pub fn expected_size(version: ScreenshotVersion, width: u32, height: u32) -> Option<usize> {
+    if width == 0 || height == 0 || width > MAX_SCREEN_DIM || height > MAX_SCREEN_DIM {
+        return None;
+    }
+    let row_bytes = ((width as usize) * version.bits_per_pixel()).div_ceil(8);
+    row_bytes.checked_mul(height as usize)
 }
 
 /// Decode a complete framebuffer into row-major RGBA8888 pixels
 /// (`width * height * 4` bytes). Missing trailing bytes decode as black.
+/// Returns an empty vec if the dimensions fail [`expected_size`] validation.
 pub fn decode_to_rgba(version: ScreenshotVersion, width: u32, height: u32, data: &[u8]) -> Vec<u8> {
+    if expected_size(version, width, height).is_none() {
+        return Vec::new();
+    }
     let w = width as usize;
     let h = height as usize;
+    // Safe: dimensions validated above (each ≤ MAX_SCREEN_DIM).
     let mut rgba = vec![0u8; w * h * 4];
     match version {
         ScreenshotVersion::BlackWhite1Bit => {
-            let stride = w / 8; // tightly packed 1-bit rows
+            let stride = w.div_ceil(8); // byte-aligned 1-bit rows
             for y in 0..h {
                 for x in 0..w {
                     let bit = data
@@ -151,8 +166,18 @@ mod tests {
         assert_eq!(h.version, Some(ScreenshotVersion::Color8Bit));
         assert_eq!((h.width, h.height), (144, 168));
         assert_eq!(data, &[0xAA, 0xBB]);
-        assert_eq!(expected_size(ScreenshotVersion::Color8Bit, 144, 168), 144 * 168);
+        assert_eq!(expected_size(ScreenshotVersion::Color8Bit, 144, 168), Some(144 * 168));
         assert!(parse_screenshot_header(&[0, 0, 0]).is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_geometry() {
+        assert_eq!(expected_size(ScreenshotVersion::Color8Bit, 0, 168), None);
+        assert_eq!(expected_size(ScreenshotVersion::Color8Bit, 5000, 168), None);
+        assert_eq!(expected_size(ScreenshotVersion::BlackWhite1Bit, 144, 99999), None);
+        // 1-bit row is byte-aligned: 18 bytes/row * 168 rows.
+        assert_eq!(expected_size(ScreenshotVersion::BlackWhite1Bit, 144, 168), Some(18 * 168));
+        assert!(decode_to_rgba(ScreenshotVersion::Color8Bit, 5000, 5000, &[]).is_empty());
     }
 
     #[test]

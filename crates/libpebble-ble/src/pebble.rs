@@ -104,6 +104,9 @@ struct RawScreenshot {
 
 /// In-flight screenshot reassembly state (header, then accumulating data).
 struct ScreenshotAccumulator {
+    /// Identifies the originating `take_screenshot` so its cleanup can't clobber
+    /// a different request that started after this one finished.
+    request_id: u64,
     version: Option<ScreenshotVersion>,
     width: u32,
     height: u32,
@@ -124,6 +127,8 @@ struct PebbleInner {
     app_run_state_handlers: Vec<AppRunStateHandler>,
     /// In-flight screenshot reassembly, if a `take_screenshot` is awaiting.
     screenshot: Option<ScreenshotAccumulator>,
+    /// Monotonic id assigned to each screenshot request.
+    screenshot_seq: u64,
     /// transaction_id → future resolved when watch ACK/NACKs it
     pending: HashMap<u8, oneshot::Sender<bool>>,
     /// BlobDB2 token → future resolved when watch sends the matching response
@@ -155,6 +160,7 @@ impl PebbleInner {
             battery_level: None,
             app_run_state_handlers: Vec::new(),
             screenshot: None,
+            screenshot_seq: 0,
             pending: HashMap::new(),
             blobdb2_pending: HashMap::new(),
             watch_version_pending: Vec::new(),
@@ -326,6 +332,9 @@ impl Pebble {
                     let nack_handlers = inner.nack_handlers.clone();
                     inner.datalog_sessions.clear();
                     inner.blobdb2_pending.clear();
+                    if let Some(acc) = inner.screenshot.take() {
+                        let _ = acc.done.send(Err("watch disconnected".into()));
+                    }
                     (pending, nack_handlers)
                 };
                 for (txn, sender) in pending {
@@ -685,6 +694,9 @@ impl Pebble {
         // their callers pending until the per-request timeout fires.
         inner.watch_version_pending.clear();
         inner.watch_color_pending.clear();
+        if let Some(acc) = inner.screenshot.take() {
+            let _ = acc.done.send(Err("watch disconnected".into()));
+        }
     }
 
     pub async fn forget(&self) -> Result<(), PebbleError> {
@@ -756,12 +768,15 @@ impl Pebble {
             return Err(PebbleError::NotConnected);
         }
         let (tx, rx) = oneshot::channel::<Result<RawScreenshot, String>>();
-        {
+        let request_id = {
             let mut guard = self.inner.lock().unwrap();
             if guard.screenshot.is_some() {
                 return Err(PebbleError::Other("a screenshot is already in progress".into()));
             }
+            guard.screenshot_seq += 1;
+            let request_id = guard.screenshot_seq;
             guard.screenshot = Some(ScreenshotAccumulator {
+                request_id,
                 version: None,
                 width: 0,
                 height: 0,
@@ -769,14 +784,15 @@ impl Pebble {
                 buffer: Vec::new(),
                 done: tx,
             });
-        }
+            request_id
+        };
         if let Err(e) = self.send_pebble(Endpoint::Screenshot, &build_screenshot_request()) {
-            self.inner.lock().unwrap().screenshot = None;
+            self.clear_screenshot(request_id);
             return Err(e);
         }
         let result = timeout(Duration::from_secs(30), rx).await;
-        // Drop the accumulator if it's still pending (timeout/error).
-        self.inner.lock().unwrap().screenshot = None;
+        // Drop the accumulator only if it's still ours and pending (timeout).
+        self.clear_screenshot(request_id);
         match result {
             Ok(Ok(Ok(raw))) => Ok(Screenshot {
                 width: raw.width,
@@ -785,6 +801,16 @@ impl Pebble {
             }),
             Ok(Ok(Err(e))) => Err(PebbleError::Other(e)),
             _ => Err(PebbleError::Other("screenshot timed out".into())),
+        }
+    }
+
+    /// Drop the in-flight screenshot accumulator only if it still belongs to
+    /// `request_id` — avoids clobbering a request that started after this one
+    /// already completed (and the dispatch took the accumulator).
+    fn clear_screenshot(&self, request_id: u64) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.screenshot.as_ref().map(|a| a.request_id) == Some(request_id) {
+            guard.screenshot = None;
         }
     }
 
@@ -1332,16 +1358,24 @@ fn on_screenshot_message(payload: &[u8], inner: &Arc<Mutex<PebbleInner>>) {
                 if header.response_code != ScreenshotResponseCode::Ok {
                     Step::Error(format!("watch returned {:?}", header.response_code))
                 } else if let Some(version) = header.version {
-                    acc.version = Some(version);
-                    acc.width = header.width;
-                    acc.height = header.height;
-                    acc.expected =
-                        crate::endpoints::screenshot::expected_size(version, header.width, header.height);
-                    acc.buffer.extend_from_slice(data);
-                    if acc.expected > 0 && acc.buffer.len() >= acc.expected {
-                        Step::Done
-                    } else {
-                        Step::Continue
+                    match crate::endpoints::screenshot::expected_size(
+                        version,
+                        header.width,
+                        header.height,
+                    ) {
+                        Some(expected) => {
+                            acc.version = Some(version);
+                            acc.width = header.width;
+                            acc.height = header.height;
+                            acc.expected = expected;
+                            acc.buffer.extend_from_slice(data);
+                            if acc.expected > 0 && acc.buffer.len() >= acc.expected {
+                                Step::Done
+                            } else {
+                                Step::Continue
+                            }
+                        }
+                        None => Step::Error("invalid screenshot dimensions".into()),
                     }
                 } else {
                     Step::Error("unknown screenshot version".into())
