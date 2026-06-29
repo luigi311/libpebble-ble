@@ -4,8 +4,40 @@ requires-python = ">=3.11"
 
 [manifest]
 members = [
-    "pebble-le-client",
-    "pebble-le-workspace",
+    "cobble-client",
+    "cobble-workspace",
+]
+
+[[package]]
+name = "cobble-client"
+version = "0.3.0"
+source = { editable = "packages/cobble-client" }
+dependencies = [
+    { name = "dbus-fast" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "dbus-fast", specifier = ">=2.21" }]
+
+[[package]]
+name = "cobble-workspace"
+version = "0.0.0"
+source = { virtual = "." }
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "ruff", specifier = ">=0.6" },
 ]
 
 [[package]]
@@ -77,38 +109,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d7/f1/e7a6dd94a8d4a5626c03e4e99c87f241ba9e350cd9e6d75123f992427270/packaging-26.2.tar.gz", hash = "sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661", size = 228134, upload-time = "2026-04-24T20:15:23.917Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl", hash = "sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e", size = 100195, upload-time = "2026-04-24T20:15:22.081Z" },
-]
-
-[[package]]
-name = "pebble-le-client"
-version = "0.1.0"
-source = { editable = "packages/pebble-le-client" }
-dependencies = [
-    { name = "dbus-fast" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "dbus-fast", specifier = ">=2.21" }]
-
-[[package]]
-name = "pebble-le-workspace"
-version = "0.0.0"
-source = { virtual = "." }
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "ruff", specifier = ">=0.6" },
 ]
 
 [[package]]
