@@ -35,6 +35,8 @@ HealthProfileHandler = Callable[[dict], None]
 WatchSettingHandler = Callable[[str, object], None]
 # battery percentage 0-100, or None when unknown/disconnected
 BatteryHandler = Callable[[int | None], None]
+# app uuid, running (True on launch, False on exit)
+AppRunStateHandler = Callable[[str, bool], None]
 
 _DBUS = "org.freedesktop.DBus"
 _DBUS_PATH = "/org/freedesktop/DBus"
@@ -76,6 +78,7 @@ class CobbleClient:
         self._health_profile_handlers: list[HealthProfileHandler] = []
         self._watch_setting_handlers: list[WatchSettingHandler] = []
         self._battery_handlers: list[BatteryHandler] = []
+        self._app_run_state_handlers: list[AppRunStateHandler] = []
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -124,6 +127,7 @@ class CobbleClient:
         self._iface.on_health_profile_received(self._dispatch_health_profile)
         self._iface.on_watch_setting_received(self._dispatch_watch_setting)
         self._iface.on_battery_changed(self._dispatch_battery)
+        self._iface.on_app_run_state_changed(self._dispatch_app_run_state)
 
     async def close(self) -> None:
         bus, self._bus = self._bus, None
@@ -490,6 +494,10 @@ class CobbleClient:
         self._battery_handlers.append(fn)
         return fn
 
+    def on_app_run_state(self, fn: AppRunStateHandler) -> AppRunStateHandler:
+        self._app_run_state_handlers.append(fn)
+        return fn
+
     # ------------------------------------------------------------------ #
     # signal dispatch (D-Bus -> local handlers)
     # ------------------------------------------------------------------ #
@@ -541,6 +549,10 @@ class CobbleClient:
         value = None if level < 0 else int(level)
         for h in self._battery_handlers:
             _safe(h, value)
+
+    def _dispatch_app_run_state(self, uuid: str, running: bool) -> None:
+        for h in self._app_run_state_handlers:
+            _safe(h, uuid, bool(running))
 
     # ------------------------------------------------------------------ #
     def _require_iface(self):

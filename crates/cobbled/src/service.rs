@@ -39,6 +39,7 @@
 //!     HealthProfileReceived(a{sv} profile)
 //!     WatchSettingReceived(s key, v value)
 //!     BatteryChanged(n level)  watch battery percentage (-1 = unknown)
+//!     AppRunStateChanged(s uuid, b running)  app opened/closed on the watch
 //!
 //! AppMessage values cross the D-Bus hop as (tag, payload) pairs; see codec.rs.
 
@@ -92,6 +93,8 @@ pub enum DaemonEvent {
     HealthData(DatalogData),
     /// Watch battery percentage (0–100) changed.
     BatteryChanged(u8),
+    /// An app opened (running=true) or closed (running=false) on the watch.
+    AppRunState { uuid: String, running: bool },
     /// Decoded "activityPreferences" record (height/weight/age/gender) from the watch.
     HealthProfile(ActivityPreferences),
     /// Decoded "hrmPreferences" record from the watch.
@@ -810,6 +813,14 @@ impl CobbleDaemon {
         signal_emitter: &SignalEmitter<'_>,
         level: i16,
     ) -> zbus::Result<()>;
+
+    /// Emitted when an app opens (running=true) or closes (running=false) on the watch.
+    #[zbus(signal)]
+    pub async fn app_run_state_changed(
+        signal_emitter: &SignalEmitter<'_>,
+        uuid: &str,
+        running: bool,
+    ) -> zbus::Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -864,6 +875,9 @@ pub async fn run_signal_emitter(
                     let _ = iface.get().await.battery_level_changed(iface.signal_emitter()).await;
                     let _ = CobbleDaemon::battery_changed(emitter, i16::from(level)).await;
                 }
+            }
+            DaemonEvent::AppRunState { uuid, running } => {
+                let _ = CobbleDaemon::app_run_state_changed(emitter, &uuid, running).await;
             }
             DaemonEvent::AppMessageReceived { uuid, data } => {
                 let wire = encode_wire_dict(&data);

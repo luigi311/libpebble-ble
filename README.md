@@ -226,6 +226,7 @@ Object path: `/org/cobble/Daemon` — session bus.
 | Signal | `HealthProfileReceived` | `(a{sv})` | watch health profile, emitted on connect and on change |
 | Signal | `WatchSettingReceived` | `(s, v)` | key, value — emitted per general watch setting as it syncs |
 | Signal | `BatteryChanged` | `(n)` | watch battery percentage (-1 = unknown) |
+| Signal | `AppRunStateChanged` | `(s, b)` | app uuid, running — emitted when an app opens/closes on the watch |
 
 AppMessage values cross D-Bus as `(tag, variant)` pairs where tag is one of
 `u8 u16 u32 i8 i16 i32 uint int str bytes`. The Python client handles all
@@ -241,7 +242,7 @@ consume raw records without reading the database directly.
 ### libpebble-ble
 - [x] Connect via BLE (pairing, reconnect, MTU/connectivity handshake)
 - [x] Pings
-- [x] App launch / stop
+- [x] App launch / stop (+ inbound run-state events)
 - [x] AppMessage
 - [x] Time sync
 - [ ] Notifications
