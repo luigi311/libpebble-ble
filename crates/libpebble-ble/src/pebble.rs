@@ -240,7 +240,7 @@ impl Pebble {
                 });
             }),
             Arc::new(move || {
-                warn!("watch disconnected from PPoGATT server");
+                debug!("watch disconnected from PPoGATT server");
                 let _ = connected_tx_for_disc.send(false);
                 // Drain pending and snapshot handlers while holding the lock,
                 // then drop it before invoking handlers to avoid re-entrant deadlock.
@@ -355,7 +355,7 @@ impl Pebble {
                         poll.tick().await;
                         match device.is_connected().await {
                             Ok(false) | Err(_) => {
-                                warn!("keepalive: device not connected; triggering disconnect");
+                                debug!("keepalive: device not connected; triggering disconnect");
                                 let _ = connected_tx.send(false);
                                 return;
                             }
@@ -372,14 +372,14 @@ impl Pebble {
                                 Some(bluer::DeviceEvent::PropertyChanged(
                                     bluer::DeviceProperty::Connected(false),
                                 )) => {
-                                    warn!("BlueZ reports device Connected=False; watch dropped");
+                                    debug!("BlueZ reports device Connected=False; watch dropped");
                                     let _ = connected_tx.send(false);
                                     return;
                                 }
                                 None => {
                                     // BlueZ removed the device from its cache rather than
                                     // emitting Connected=False — treat as disconnect.
-                                    warn!("device event stream ended; triggering disconnect");
+                                    debug!("device event stream ended; triggering disconnect");
                                     let _ = connected_tx.send(false);
                                     return;
                                 }
@@ -388,7 +388,7 @@ impl Pebble {
                             _ = poll.tick() => {
                                 match device.is_connected().await {
                                     Ok(false) | Err(_) => {
-                                        warn!("keepalive: device not connected; triggering disconnect");
+                                        debug!("keepalive: device not connected; triggering disconnect");
                                         let _ = connected_tx.send(false);
                                         return;
                                     }
