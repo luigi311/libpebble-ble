@@ -291,6 +291,14 @@ impl CobbleDaemon {
         let mut state = self.state.lock().unwrap();
         state.connected = false;
         state.pebble = None;
+        // Drop watch-scoped session state so a different watch reconnecting
+        // doesn't serve the previous watch's stale profile/settings until it
+        // re-syncs. The cache_* handlers rebuild these from the new session.
+        state.health_profile = None;
+        state.hrm_prefs = None;
+        state.heart_rate_prefs = None;
+        state.imperial_units = None;
+        state.watch_settings.clear();
         let _ = state.event_tx.send(DaemonEvent::ConnectionChanged(false));
     }
 

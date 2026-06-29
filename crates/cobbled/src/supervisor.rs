@@ -13,6 +13,10 @@ use tracing::{debug, info, warn};
 
 use crate::service::{CobbleDaemon, DaemonEvent};
 
+/// BlobDB id of the WatchPrefs database (matches `BlobDBId::WatchPrefs`); the
+/// only DB whose writebacks carry health/settings keys we decode.
+const WATCH_PREFS_DB: u8 = 12;
+
 pub async fn run_supervisor(daemon: CobbleDaemon) {
     let mut backoff = 2.0f64;
 
@@ -46,46 +50,55 @@ pub async fn run_supervisor(daemon: CobbleDaemon) {
             // MarkAllDirty. Decode the health-related keys into events; log the rest.
             let tx = event_tx.clone();
             pebble.on_watch_pref(Arc::new(move |db: u8, key: String, value: Vec<u8>| {
-                let _ = db; // keep for parity with the handler signature
+                // Health/settings keys live in the WatchPrefs DB (12). Ignore
+                // writebacks from any other database so we never decode a
+                // colliding key from the wrong DB.
+                if db != WATCH_PREFS_DB {
+                    return;
+                }
+                // Value-level details (PII, raw blobs) are logged only at debug
+                // (i.e. under --verbose); default logs stay value-free.
                 match key.as_str() {
                     "activityPreferences" => match parse_activity_preferences(&value) {
                         Some(p) => {
-                            info!(
-                                "watch health profile: height={}cm weight={}kg age={} gender={} \
+                            debug!(
+                                "activityPreferences: height={}cm weight={}kg age={} gender={} \
                                  tracking={} activity_insights={} sleep_insights={}",
                                 p.height_cm, p.weight_kg, p.age, p.gender,
                                 p.tracking_enabled, p.activity_insights_enabled, p.sleep_insights_enabled,
                             );
                             let _ = tx.send(DaemonEvent::HealthProfile(p));
                         }
-                        None => warn!("activityPreferences blob malformed: {value:02x?}"),
+                        None => warn!("activityPreferences blob malformed ({} bytes)", value.len()),
                     },
-                    "hrmPreferences" => {
-                        if let Some(hrm) = parse_hrm_preferences(&value) {
-                            info!(
-                                "watch health profile: hrm_enabled={} interval={:?} activity_tracking={:?}",
+                    "hrmPreferences" => match parse_hrm_preferences(&value) {
+                        Some(hrm) => {
+                            debug!(
+                                "hrmPreferences: enabled={} interval={:?} activity_tracking={:?}",
                                 hrm.enabled, hrm.measurement_interval, hrm.activity_tracking_enabled,
                             );
                             let _ = tx.send(DaemonEvent::HealthHrm(hrm));
                         }
-                    }
+                        None => warn!("hrmPreferences blob malformed ({} bytes)", value.len()),
+                    },
                     "heartRatePreferences" => match parse_heart_rate_preferences(&value) {
                         Some(hr) => {
-                            info!(
-                                "watch HR prefs: resting={} elevated={} max={} zones={}/{}/{}",
+                            debug!(
+                                "heartRatePreferences: resting={} elevated={} max={} zones={}/{}/{}",
                                 hr.resting_hr, hr.elevated_hr, hr.max_hr,
                                 hr.zone1_threshold, hr.zone2_threshold, hr.zone3_threshold,
                             );
                             let _ = tx.send(DaemonEvent::HealthHeartRate(hr));
                         }
-                        None => warn!("heartRatePreferences blob malformed: {value:02x?}"),
+                        None => warn!("heartRatePreferences blob malformed ({} bytes)", value.len()),
                     },
-                    "unitsDistance" => {
-                        if let Some(imperial) = parse_units_distance(&value) {
-                            info!("watch health profile: imperial_units={imperial}");
+                    "unitsDistance" => match parse_units_distance(&value) {
+                        Some(imperial) => {
+                            debug!("unitsDistance: imperial={imperial}");
                             let _ = tx.send(DaemonEvent::HealthUnits(imperial));
                         }
-                    }
+                        None => warn!("unitsDistance blob malformed ({} bytes)", value.len()),
+                    },
                     // General watch settings (backlight, clock, vibration, quiet time, …).
                     other => match decode_watch_pref(other, &value) {
                         Some(decoded) => {

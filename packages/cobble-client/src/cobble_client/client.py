@@ -305,7 +305,7 @@ class CobbleClient:
             values = await self._iface.call_get_health_profile()
         except DBusError as e:
             raise self._translate(e) from e
-        return dict(zip(self.HEALTH_PROFILE_FIELDS, values, strict=False))
+        return self._profile_dict(values)
 
     async def get_watch_settings(self) -> dict:
         """Return all decoded general watch settings (db 12) as a key -> value dict.
@@ -319,6 +319,16 @@ class CobbleClient:
         except DBusError as e:
             raise self._translate(e) from e
         return {k: _unwrap(v) for k, v in raw.items()}
+
+    def _profile_dict(self, values) -> dict:
+        """Build the profile dict, rejecting a daemon/client field-count mismatch."""
+        if len(values) != len(self.HEALTH_PROFILE_FIELDS):
+            msg = (
+                f"health profile has {len(values)} fields, expected "
+                f"{len(self.HEALTH_PROFILE_FIELDS)} — daemon/client schema mismatch"
+            )
+            raise ValueError(msg)
+        return dict(zip(self.HEALTH_PROFILE_FIELDS, values, strict=True))
 
     async def push_weather(
         self,
@@ -439,7 +449,12 @@ class CobbleClient:
             _safe(h, tag, app_uuid, session_timestamp, items_left, crc, item_type, item_size, data)
 
     def _dispatch_health_profile(self, profile) -> None:
-        decoded = dict(zip(self.HEALTH_PROFILE_FIELDS, profile, strict=False))
+        try:
+            decoded = self._profile_dict(profile)
+        except ValueError:
+            # Signal payload doesn't match our schema; drop rather than deliver
+            # partial/garbled data to handlers.
+            return
         for h in self._health_profile_handlers:
             _safe(h, decoded)
 
