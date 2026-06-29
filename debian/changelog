@@ -1,3 +1,17 @@
+cobbled (0.4.0-1) UNRELEASED; urgency=medium
+
+  * Process more of the watchperf data by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/15
+  * Support multiple verbose flags by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/16
+  * Fix GetHealthProfile D-Bus signature: return a{sv} map by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/17
+  * Add reset/system endpoints to get watch information by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/18
+  * Expose full libpebble-ble surface via daemon + client; update README by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/19
+  * Add battery level support by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/20
+  * Add app run state support by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/21
+  * Add screenshot support by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/22
+  * Add music control endpoint (push now-playing + inbound actions) by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/23
+
+ -- Luis Garcia <luigi311@Luigi311-Desktop>  Mon, 29 Jun 2026 22:02:36 +0000
+
 cobbled (0.3.0-1) unstable; urgency=medium
 
   * Rename project to cobble/cobbled
