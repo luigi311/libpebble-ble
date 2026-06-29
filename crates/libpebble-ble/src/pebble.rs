@@ -40,7 +40,6 @@ use crate::{
             build_blobdb_insert, build_blobdb_insert_with_timestamp, build_blobdb_str_insert, build_notification,
             build_weather_blob, build_weather_prefs_blob, parse_blobdb2_incoming, parse_blobdb_response,
             BlobDB2Incoming, BlobDBId, BlobDBStatus, NotificationCategory, WeatherType,
-            BLOBDB2_DB_WATCH_PREFS,
         },
         datalog::{
             self, build_reply, build_report_sessions, DatalogData, DatalogSession,
@@ -68,7 +67,10 @@ pub type AppMessageHandler =
 pub type AckHandler = Arc<dyn Fn(u8) + Send + Sync + 'static>;
 pub type NackHandler = Arc<dyn Fn(u8) + Send + Sync + 'static>;
 pub type HealthDataHandler = Arc<dyn Fn(DatalogData) + Send + Sync + 'static>;
-pub type WatchPrefHandler = Arc<dyn Fn(String, Vec<u8>) + Send + Sync + 'static>;
+/// Handler for records the watch pushes back over BlobDB2 (Write/WriteBack).
+/// Arguments: `(db_id, key, value)` — `db_id` matches `BlobDBId` (e.g. 7 =
+/// HealthParams, 12 = WatchPrefs) so a single handler can route by database.
+pub type WatchPrefHandler = Arc<dyn Fn(u8, String, Vec<u8>) + Send + Sync + 'static>;
 
 struct PebbleInner {
     app_message_handlers: Vec<AppMessageHandler>,
@@ -775,6 +777,32 @@ impl Pebble {
         self.send_pebble(Endpoint::HealthSync, &build_health_sync_request())
     }
 
+    /// Ask the watch to re-push its watch-side preferences via BlobDB2.
+    ///
+    /// The health profile ("activityPreferences", "hrmPreferences",
+    /// "heartRatePreferences") lives in the WatchPrefs DB (id 12), not the
+    /// HealthParams DB (id 7) — the latter returns NotSupported for MarkAllDirty.
+    /// Records arrive asynchronously through any handler registered with
+    /// [`Pebble::on_watch_pref`].
+    ///
+    /// Requires BlobDB2 v1+; returns an error on v0 watches.
+    pub async fn fetch_health_params(&self) -> Result<(), PebbleError> {
+        if !self.is_connected() {
+            return Err(PebbleError::NotConnected);
+        }
+        let version = self.inner.lock().unwrap().blob_db_version;
+        if version < 1 {
+            return Err(PebbleError::Other(
+                "watch does not support BlobDB2 sync (v0); cannot fetch health params".into(),
+            ));
+        }
+        debug!("requesting WatchPrefs BlobDB2 re-sync (MarkAllDirty)");
+        self.send_pebble(
+            Endpoint::BlobDbV2,
+            &build_blobdb2_mark_all_dirty(rand_u16(), BlobDBId::WatchPrefs),
+        )
+    }
+
     fn send_pebble(&self, endpoint: Endpoint, payload: &[u8]) -> Result<(), PebbleError> {
         let message = pebble_pack(endpoint, payload)
             .ok_or_else(|| PebbleError::Other("payload too large for Pebble Protocol".into()))?;
@@ -1022,11 +1050,9 @@ fn on_blobdb2_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
                 build_blobdb2_write_response(w.token, BlobDBStatus::Success)
             };
             blobdb2_send(inner, resp);
-            if w.db == BLOBDB2_DB_WATCH_PREFS {
-                let handlers: Vec<_> = inner.lock().unwrap().watch_pref_handlers.clone();
-                for h in handlers {
-                    h(key.clone(), w.value.clone());
-                }
+            let handlers: Vec<_> = inner.lock().unwrap().watch_pref_handlers.clone();
+            for h in handlers {
+                h(w.db, key.clone(), w.value.clone());
             }
         }
         BlobDB2Incoming::SyncDone { token, db } => {
@@ -1035,9 +1061,14 @@ fn on_blobdb2_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
         }
         other => {
             if let Some(token) = other.response_token() {
-                let mut guard = inner.lock().unwrap();
-                if let Some(sender) = guard.blobdb2_pending.remove(&token) {
-                    let _ = sender.send(other);
+                let sender = inner.lock().unwrap().blobdb2_pending.remove(&token);
+                match sender {
+                    Some(sender) => {
+                        let _ = sender.send(other);
+                    }
+                    // No one is awaiting this token (e.g. a fire-and-forget
+                    // MarkAllDirty). Log the status so the response isn't lost.
+                    None => debug!("BlobDB2 unsolicited response: {other:?}"),
                 }
             }
         }

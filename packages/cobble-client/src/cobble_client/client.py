@@ -29,6 +29,10 @@ NackHandler = Callable[[int], None]
 ConnectionHandler = Callable[[bool], None]
 # tag, app_uuid, session_timestamp, items_left, crc, item_type, item_size, data
 HealthDataHandler = Callable[[int, bytes, int, int, int, int, int, bytes], None]
+# the decoded health profile dict (see CobbleClient.HEALTH_PROFILE_FIELDS)
+HealthProfileHandler = Callable[[dict], None]
+# key, value (bool / int / str)
+WatchSettingHandler = Callable[[str, object], None]
 
 _DBUS = "org.freedesktop.DBus"
 _DBUS_PATH = "/org/freedesktop/DBus"
@@ -58,6 +62,28 @@ class CobbleClient:
         await cobble.close()
     """
 
+    # Field order of the GetHealthProfile struct (qqqqbbbbybqqqqqqb), used to
+    # turn the positional D-Bus struct into a named dict.
+    HEALTH_PROFILE_FIELDS = (
+        "height_cm",
+        "weight_kg",
+        "age",
+        "gender",  # 0 = female, 1 = male, 2 = other
+        "tracking_enabled",
+        "activity_insights_enabled",
+        "sleep_insights_enabled",
+        "hrm_enabled",
+        "hrm_measurement_interval",  # 0=10min,1=30min,2=1h,3=disabled,255=unknown
+        "hrm_activity_tracking",
+        "resting_hr",
+        "elevated_hr",
+        "max_hr",
+        "hr_zone1_threshold",
+        "hr_zone2_threshold",
+        "hr_zone3_threshold",
+        "imperial_units",
+    )
+
     def __init__(self) -> None:
         self._bus: MessageBus | None = None
         self._iface = None  # proxy interface for org.cobble.Daemon
@@ -67,6 +93,8 @@ class CobbleClient:
         self._nack_handlers: list[NackHandler] = []
         self._conn_handlers: list[ConnectionHandler] = []
         self._health_handlers: list[HealthDataHandler] = []
+        self._health_profile_handlers: list[HealthProfileHandler] = []
+        self._watch_setting_handlers: list[WatchSettingHandler] = []
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -112,6 +140,8 @@ class CobbleClient:
         self._iface.on_nack_received(self._dispatch_nack)
         self._iface.on_connection_changed(self._dispatch_connection)
         self._iface.on_health_data_received(self._dispatch_health_data)
+        self._iface.on_health_profile_received(self._dispatch_health_profile)
+        self._iface.on_watch_setting_received(self._dispatch_watch_setting)
 
     async def close(self) -> None:
         bus, self._bus = self._bus, None
@@ -239,7 +269,7 @@ class CobbleClient:
     ) -> None:
         """Write the health user profile to the watch and trigger a DataLog sync.
 
-        gender: 0 = male, 1 = female.
+        gender: 0 = female, 1 = male, 2 = other (libpebble3 HealthGender).
         """
         self._require_iface()
         try:
@@ -254,6 +284,51 @@ class CobbleClient:
             await self._iface.call_fetch_health_data()
         except DBusError as e:
             raise self._translate(e) from e
+
+    async def fetch_health_params(self) -> None:
+        """Ask the watch to re-sync its health/watch settings (WatchPrefs)."""
+        self._require_iface()
+        try:
+            await self._iface.call_fetch_health_params()
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def get_health_profile(self) -> dict:
+        """Return the watch's health profile as a dict.
+
+        Keys are `HEALTH_PROFILE_FIELDS`: height_cm, weight_kg, age, gender,
+        tracking/insight flags, HRM settings and heart-rate zones, imperial_units.
+        Raises if no profile has synced yet (call fetch_health_params first).
+        """
+        self._require_iface()
+        try:
+            values = await self._iface.call_get_health_profile()
+        except DBusError as e:
+            raise self._translate(e) from e
+        return self._profile_dict(values)
+
+    async def get_watch_settings(self) -> dict:
+        """Return all decoded general watch settings (db 12) as a key -> value dict.
+
+        Values are plain bool / int / str. Empty until the watch syncs settings
+        on connect; call fetch_health_params to force a re-sync.
+        """
+        self._require_iface()
+        try:
+            raw = await self._iface.call_get_watch_settings()
+        except DBusError as e:
+            raise self._translate(e) from e
+        return {k: _unwrap(v) for k, v in raw.items()}
+
+    def _profile_dict(self, values) -> dict:
+        """Build the profile dict, rejecting a daemon/client field-count mismatch."""
+        if len(values) != len(self.HEALTH_PROFILE_FIELDS):
+            msg = (
+                f"health profile has {len(values)} fields, expected "
+                f"{len(self.HEALTH_PROFILE_FIELDS)} — daemon/client schema mismatch"
+            )
+            raise ValueError(msg)
+        return dict(zip(self.HEALTH_PROFILE_FIELDS, values, strict=True))
 
     async def push_weather(
         self,
@@ -328,6 +403,14 @@ class CobbleClient:
         self._health_handlers.append(fn)
         return fn
 
+    def on_health_profile(self, fn: HealthProfileHandler) -> HealthProfileHandler:
+        self._health_profile_handlers.append(fn)
+        return fn
+
+    def on_watch_setting(self, fn: WatchSettingHandler) -> WatchSettingHandler:
+        self._watch_setting_handlers.append(fn)
+        return fn
+
     # ------------------------------------------------------------------ #
     # signal dispatch (D-Bus -> local handlers)
     # ------------------------------------------------------------------ #
@@ -365,6 +448,21 @@ class CobbleClient:
         for h in self._health_handlers:
             _safe(h, tag, app_uuid, session_timestamp, items_left, crc, item_type, item_size, data)
 
+    def _dispatch_health_profile(self, profile) -> None:
+        try:
+            decoded = self._profile_dict(profile)
+        except ValueError:
+            # Signal payload doesn't match our schema; drop rather than deliver
+            # partial/garbled data to handlers.
+            return
+        for h in self._health_profile_handlers:
+            _safe(h, decoded)
+
+    def _dispatch_watch_setting(self, key: str, value) -> None:
+        unwrapped = _unwrap(value)
+        for h in self._watch_setting_handlers:
+            _safe(h, key, unwrapped)
+
     # ------------------------------------------------------------------ #
     def _require_iface(self):
         if self._iface is None:
@@ -377,6 +475,13 @@ class CobbleClient:
         if e.type and e.type.endswith(".NotConnected"):
             return NotConnectedError("watch is not connected")
         return e
+
+
+def _unwrap(value):
+    """Unwrap a dbus_fast Variant to its plain Python value (recursively)."""
+    if isinstance(value, Variant):
+        return _unwrap(value.value)
+    return value
 
 
 def _wrap(tag: str, payload) -> Variant:

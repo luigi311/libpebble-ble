@@ -13,6 +13,7 @@ pub mod health;
 pub mod phone_version;
 pub mod ping;
 pub mod time;
+pub mod watch_pref;
 
 pub use app_message::AppMessageValue;
 pub use app_run_state::AppRunStateCmd;

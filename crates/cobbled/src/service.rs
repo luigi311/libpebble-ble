@@ -16,6 +16,9 @@
 //!     Scan(d timeout_secs) -> a(ss)
 //!     ActivateHealth(q height_cm, q weight_kg, y age, y gender, b hrm_enabled)
 //!     FetchHealthData()
+//!     FetchHealthParams()
+//!     GetHealthProfile() -> (q height_cm, q weight_kg, q age, q gender, b tracking, b activity_insights, b sleep_insights, b hrm_enabled, y hrm_interval, b hrm_activity_tracking, q resting_hr, q elevated_hr, q max_hr, q hr_zone1, q hr_zone2, q hr_zone3, b imperial_units)
+//!     GetWatchSettings() -> a{sv}  general watch settings (db 12), key -> bool/uint32/string
 //!     PushWeather(ay location_key, s location_name, s forecast_short, n current_temp, y current_weather, n today_high, n today_low, y tomorrow_weather, n tomorrow_high, n tomorrow_low, b is_current_location)
 //!     ReprocessHealthData()
 //!
@@ -25,6 +28,8 @@
 //!     NackReceived(u txn)
 //!     ConnectionChanged(b connected)
 //!     HealthDataReceived(u tag, ay app_uuid, u session_timestamp, u items_left, u crc, y item_type, q item_size, ay data)
+//!     HealthProfileReceived((qqqqbbbbybqqqqqqb) profile)
+//!     WatchSettingReceived(s key, v value)
 //!
 //! AppMessage values cross the D-Bus hop as (tag, payload) pairs; see codec.rs.
 
@@ -34,7 +39,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use libpebble_ble::{AppMessageValue, DatalogData, Pebble, WeatherType};
+use libpebble_ble::{
+    ActivityPreferences, AppMessageValue, DatalogData, HeartRatePreferences, HrmPreferences,
+    Pebble, WatchPrefValue, WeatherType,
+};
 
 use crate::db::HealthDb;
 use tokio::sync::mpsc;
@@ -42,6 +50,7 @@ use tracing::{debug, warn};
 use zbus::{
     interface,
     object_server::SignalEmitter,
+    zvariant::{OwnedValue, Value},
     Connection,
 };
 
@@ -72,6 +81,55 @@ pub enum DaemonEvent {
     AckReceived(u8),
     NackReceived(u8),
     HealthData(DatalogData),
+    /// Decoded "activityPreferences" record (height/weight/age/gender) from the watch.
+    HealthProfile(ActivityPreferences),
+    /// Decoded "hrmPreferences" record from the watch.
+    HealthHrm(HrmPreferences),
+    /// Decoded "heartRatePreferences" record from the watch.
+    HealthHeartRate(HeartRatePreferences),
+    /// Decoded "unitsDistance" flag from the watch (true = imperial).
+    HealthUnits(bool),
+    /// A decoded general watch setting (BlobDB WatchPrefs, db 12).
+    WatchSetting { key: String, value: WatchPrefValue },
+}
+
+/// Convert a decoded watch-pref value into a D-Bus variant for `a{sv}`.
+fn watch_pref_owned_value(v: &WatchPrefValue) -> OwnedValue {
+    let value = match v {
+        WatchPrefValue::Bool(b) => Value::from(*b),
+        WatchPrefValue::Number(n) => Value::from(*n),
+        WatchPrefValue::Text(s) => Value::from(s.clone()),
+    };
+    OwnedValue::try_from(value).expect("primitive value converts to OwnedValue")
+}
+
+/// The watch-side health profile, as synced back over BlobDB2 (WatchPrefs).
+/// Crosses D-Bus as a struct `(qqqqbbbbybqqqqqqb)`. Single-byte wire fields are
+/// widened to u16 so they render as plain integers for D-Bus clients; HR fields
+/// are 0 and `hrm_measurement_interval` is 255 until the watch syncs them.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, zvariant::Type)]
+pub struct HealthProfile {
+    pub height_cm: u16,
+    pub weight_kg: u16,
+    pub age: u16,
+    /// 0 = female, 1 = male, 2 = other (libpebble3 `HealthGender`).
+    pub gender: u16,
+    pub tracking_enabled: bool,
+    pub activity_insights_enabled: bool,
+    pub sleep_insights_enabled: bool,
+    /// Heart-rate monitoring enabled. `false` until the watch syncs hrmPreferences.
+    pub hrm_enabled: bool,
+    /// 0 = 10min, 1 = 30min, 2 = 1h, 3 = disabled, 255 = not synced yet.
+    pub hrm_measurement_interval: u8,
+    pub hrm_activity_tracking: bool,
+    pub resting_hr: u16,
+    pub elevated_hr: u16,
+    pub max_hr: u16,
+    pub hr_zone1_threshold: u16,
+    pub hr_zone2_threshold: u16,
+    pub hr_zone3_threshold: u16,
+    /// true = imperial (mi/lb), false = metric (km/kg). false until synced.
+    pub imperial_units: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +149,16 @@ struct DaemonState {
     notify_blocklist: Vec<String>,
     event_tx: mpsc::UnboundedSender<DaemonEvent>,
     db: Option<Arc<Mutex<HealthDb>>>,
+    /// Last health profile the watch synced via WatchPrefs (None until first sync).
+    health_profile: Option<ActivityPreferences>,
+    /// Last "hrmPreferences" record the watch synced (None until first sync).
+    hrm_prefs: Option<HrmPreferences>,
+    /// Last "heartRatePreferences" record the watch synced (None until first sync).
+    heart_rate_prefs: Option<HeartRatePreferences>,
+    /// Last "unitsDistance" flag the watch synced; true = imperial (None until first sync).
+    imperial_units: Option<bool>,
+    /// General watch settings (BlobDB WatchPrefs db 12) decoded so far, keyed by name.
+    watch_settings: HashMap<String, WatchPrefValue>,
 }
 
 #[derive(Clone)]
@@ -118,6 +186,11 @@ impl CobbleDaemon {
                 notify_blocklist: vec!["".to_string()],
                 event_tx,
                 db,
+                health_profile: None,
+                hrm_prefs: None,
+                heart_rate_prefs: None,
+                imperial_units: None,
+                watch_settings: HashMap::new(),
             })),
         }
     }
@@ -148,11 +221,84 @@ impl CobbleDaemon {
         let _ = state.event_tx.send(DaemonEvent::ConnectionChanged(true));
     }
 
+    /// Cache the demographic health profile synced from the watch and return the
+    /// merged snapshot (profile + last-known HRM flag) for signal emission.
+    pub(crate) fn cache_health_profile(&self, prefs: ActivityPreferences) -> HealthProfile {
+        let mut s = self.state.lock().unwrap();
+        s.health_profile = Some(prefs);
+        Self::merged_profile(&s).expect("profile just set")
+    }
+
+    /// Cache the HRM record. Returns the merged snapshot only if the demographic
+    /// profile is already known (otherwise there is nothing useful to signal yet).
+    pub(crate) fn cache_hrm(&self, hrm: HrmPreferences) -> Option<HealthProfile> {
+        let mut s = self.state.lock().unwrap();
+        s.hrm_prefs = Some(hrm);
+        Self::merged_profile(&s)
+    }
+
+    /// Cache the heart-rate record. Returns the merged snapshot only if the
+    /// demographic profile is already known.
+    pub(crate) fn cache_heart_rate(&self, hr: HeartRatePreferences) -> Option<HealthProfile> {
+        let mut s = self.state.lock().unwrap();
+        s.heart_rate_prefs = Some(hr);
+        Self::merged_profile(&s)
+    }
+
+    /// Cache the distance-units flag (true = imperial). Returns the merged
+    /// snapshot only if the demographic profile is already known.
+    pub(crate) fn cache_units(&self, imperial: bool) -> Option<HealthProfile> {
+        let mut s = self.state.lock().unwrap();
+        s.imperial_units = Some(imperial);
+        Self::merged_profile(&s)
+    }
+
+    /// Cache a decoded general watch setting (db 12).
+    pub(crate) fn cache_watch_setting(&self, key: String, value: WatchPrefValue) {
+        self.state.lock().unwrap().watch_settings.insert(key, value);
+    }
+
+    fn merged_profile(s: &DaemonState) -> Option<HealthProfile> {
+        let p = s.health_profile?;
+        let hrm = s.hrm_prefs;
+        let hr = s.heart_rate_prefs;
+        Some(HealthProfile {
+            height_cm: p.height_cm,
+            weight_kg: p.weight_kg,
+            age: p.age as u16,
+            gender: p.gender as u16,
+            tracking_enabled: p.tracking_enabled,
+            activity_insights_enabled: p.activity_insights_enabled,
+            sleep_insights_enabled: p.sleep_insights_enabled,
+            hrm_enabled: hrm.map(|h| h.enabled).unwrap_or(false),
+            hrm_measurement_interval: hrm
+                .and_then(|h| h.measurement_interval)
+                .map(|i| i.code())
+                .unwrap_or(255),
+            hrm_activity_tracking: hrm.and_then(|h| h.activity_tracking_enabled).unwrap_or(false),
+            resting_hr: hr.map(|h| h.resting_hr as u16).unwrap_or(0),
+            elevated_hr: hr.map(|h| h.elevated_hr as u16).unwrap_or(0),
+            max_hr: hr.map(|h| h.max_hr as u16).unwrap_or(0),
+            hr_zone1_threshold: hr.map(|h| h.zone1_threshold as u16).unwrap_or(0),
+            hr_zone2_threshold: hr.map(|h| h.zone2_threshold as u16).unwrap_or(0),
+            hr_zone3_threshold: hr.map(|h| h.zone3_threshold as u16).unwrap_or(0),
+            imperial_units: s.imperial_units.unwrap_or(false),
+        })
+    }
+
     /// Called by the supervisor when the watch disconnects.
     pub fn set_disconnected(&self) {
         let mut state = self.state.lock().unwrap();
         state.connected = false;
         state.pebble = None;
+        // Drop watch-scoped session state so a different watch reconnecting
+        // doesn't serve the previous watch's stale profile/settings until it
+        // re-syncs. The cache_* handlers rebuild these from the new session.
+        state.health_profile = None;
+        state.hrm_prefs = None;
+        state.heart_rate_prefs = None;
+        state.imperial_units = None;
+        state.watch_settings.clear();
         let _ = state.event_tx.send(DaemonEvent::ConnectionChanged(false));
     }
 
@@ -265,7 +411,7 @@ impl CobbleDaemon {
     }
 
     /// Write health user profile to the watch and trigger a DataLog sync.
-    /// gender: 0 = male, 1 = female.
+    /// gender: 0 = female, 1 = male, 2 = other (libpebble3 `HealthGender`).
     async fn activate_health(
         &self,
         height_cm: u16,
@@ -274,8 +420,10 @@ impl CobbleDaemon {
         gender: u8,
         hrm_enabled: bool,
     ) -> Result<(), DaemonError> {
-        if gender > 1 {
-            return Err(DaemonError::Failed(format!("invalid gender={gender}; must be 0 (male) or 1 (female)")));
+        if gender > 2 {
+            return Err(DaemonError::Failed(format!(
+                "invalid gender={gender}; must be 0 (female), 1 (male), or 2 (other)"
+            )));
         }
         let pebble = self.require_pebble()?;
         pebble
@@ -288,6 +436,38 @@ impl CobbleDaemon {
     fn fetch_health_data(&self) -> Result<(), DaemonError> {
         let pebble = self.require_pebble()?;
         pebble.fetch_health_data().map_err(|e| DaemonError::Failed(e.to_string()))
+    }
+
+    /// PROTOTYPE: ask the watch to re-sync its HealthParams BlobDB (height,
+    /// weight, age, gender, HRM). Decoded records are logged by the daemon; this
+    /// call only triggers the request and returns once it has been sent.
+    async fn fetch_health_params(&self) -> Result<(), DaemonError> {
+        let pebble = self.require_pebble()?;
+        pebble
+            .fetch_health_params()
+            .await
+            .map_err(|e| DaemonError::Failed(e.to_string()))
+    }
+
+    /// Return the last health profile (height/weight/age/gender/HRM) the watch
+    /// synced. Fails if no profile has been received yet this session — call
+    /// `FetchHealthParams` (or wait for the on-connect sync) first.
+    fn get_health_profile(&self) -> Result<HealthProfile, DaemonError> {
+        Self::merged_profile(&self.state.lock().unwrap())
+            .ok_or_else(|| DaemonError::Failed("no health profile synced yet".into()))
+    }
+
+    /// Return all general watch settings (BlobDB WatchPrefs, db 12) decoded so
+    /// far, as a map of key -> variant (bool / uint32 / string). Empty until the
+    /// watch syncs settings on connect. See `WatchSettingReceived` for updates.
+    fn get_watch_settings(&self) -> HashMap<String, OwnedValue> {
+        self.state
+            .lock()
+            .unwrap()
+            .watch_settings
+            .iter()
+            .map(|(k, v)| (k.clone(), watch_pref_owned_value(v)))
+            .collect()
     }
 
     /// Push weather data to the Pebble built-in weather app.
@@ -417,6 +597,23 @@ impl CobbleDaemon {
         item_size: u16,
         data: Vec<u8>,
     ) -> zbus::Result<()>;
+
+    /// Emitted when the watch syncs its health profile (height/weight/age/gender/HRM).
+    /// Fires on connect and on any subsequent change, including HRM updates.
+    #[zbus(signal)]
+    pub async fn health_profile_received(
+        signal_emitter: &SignalEmitter<'_>,
+        profile: HealthProfile,
+    ) -> zbus::Result<()>;
+
+    /// Emitted for each general watch setting (db 12) as the watch syncs it.
+    /// `value` is a variant: bool, uint32, or string depending on the key.
+    #[zbus(signal)]
+    pub async fn watch_setting_received(
+        signal_emitter: &SignalEmitter<'_>,
+        key: &str,
+        value: OwnedValue,
+    ) -> zbus::Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +624,7 @@ impl CobbleDaemon {
 /// corresponding D-Bus signals. Keeps the `Connected` property in sync.
 pub async fn run_signal_emitter(
     conn: Connection,
-    _daemon: CobbleDaemon,
+    daemon: CobbleDaemon,
     mut event_rx: mpsc::UnboundedReceiver<DaemonEvent>,
     health_db: Option<Arc<Mutex<HealthDb>>>,
 ) {
@@ -485,6 +682,30 @@ pub async fn run_signal_emitter(
                     batch.data,
                 )
                 .await;
+            }
+            DaemonEvent::HealthProfile(prefs) => {
+                let profile = daemon.cache_health_profile(prefs);
+                let _ = CobbleDaemon::health_profile_received(emitter, profile).await;
+            }
+            DaemonEvent::HealthHrm(hrm) => {
+                if let Some(profile) = daemon.cache_hrm(hrm) {
+                    let _ = CobbleDaemon::health_profile_received(emitter, profile).await;
+                }
+            }
+            DaemonEvent::HealthHeartRate(hr) => {
+                if let Some(profile) = daemon.cache_heart_rate(hr) {
+                    let _ = CobbleDaemon::health_profile_received(emitter, profile).await;
+                }
+            }
+            DaemonEvent::HealthUnits(imperial) => {
+                if let Some(profile) = daemon.cache_units(imperial) {
+                    let _ = CobbleDaemon::health_profile_received(emitter, profile).await;
+                }
+            }
+            DaemonEvent::WatchSetting { key, value } => {
+                let variant = watch_pref_owned_value(&value);
+                daemon.cache_watch_setting(key.clone(), value);
+                let _ = CobbleDaemon::watch_setting_received(emitter, &key, variant).await;
             }
         }
     }

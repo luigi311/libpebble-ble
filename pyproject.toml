@@ -1,11 +1,11 @@
 [project]
-name = "pebble-le-workspace"
+name = "cobble-workspace"
 version = "0.0.0"
-description = "Workspace root — Python client for the pebble-led Rust daemon."
+description = "Workspace root — Python client for the cobbled Rust daemon."
 requires-python = ">=3.11"
 
 [tool.uv.workspace]
-members = ["packages/pebble-le-client"]
+members = ["packages/cobble-client"]
 
 # Dev tooling shared across the workspace.
 [dependency-groups]
@@ -17,7 +17,7 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["packages/pebble-le-client/tests"]
+testpaths = ["packages/cobble-client/tests"]
 
 [tool.ruff]
 line-length = 100
