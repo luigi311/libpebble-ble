@@ -167,6 +167,11 @@ class CobbleClient:
         self._require_iface()
         return bool(await self._iface.get_connected())
 
+    async def watch_address(self) -> str:
+        """The watch Bluetooth address the daemon is configured to use."""
+        self._require_iface()
+        return await self._iface.get_watch_address()
+
     # ------------------------------------------------------------------ #
     # methods
     # ------------------------------------------------------------------ #
@@ -363,6 +368,30 @@ class CobbleClient:
         self._require_iface()
         try:
             await self._iface.call_factory_reset(confirm)
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def forget(self) -> None:
+        """Remove the watch's Bluetooth bond (unpair). Re-pairs on next reconnect."""
+        self._require_iface()
+        try:
+            await self._iface.call_forget()
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def reprocess_health_data(self) -> None:
+        """Rebuild the derived health tables from the raw stored blobs."""
+        self._require_iface()
+        try:
+            await self._iface.call_reprocess_health_data()
+        except DBusError as e:
+            raise self._translate(e) from e
+
+    async def reload_config(self) -> None:
+        """Ask the daemon to re-read its config file (reconnects if address changed)."""
+        self._require_iface()
+        try:
+            await self._iface.call_reload_config()
         except DBusError as e:
             raise self._translate(e) from e
 

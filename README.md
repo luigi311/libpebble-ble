@@ -48,10 +48,17 @@ crates/libpebble-ble/src/
                        0xb1db / 0xb2db).
     datalog.rs         DataLog session protocol — used by health data sync
                        (endpoint 0x11).
-    health.rs          Health activation blobs (activityPreferences, HRM)
-                       and HealthSync request (endpoint 0x8351).
+    health.rs          Health/settings blob decode + encode: activityPreferences
+                       (height/weight/age/gender), hrmPreferences, heartRate
+                       zones, unitsDistance, and the HealthSync request.
+    watch_pref.rs      General watch-settings (WatchPrefs) typed registry —
+                       decode db-12 keys (backlight, clock, vibration, …).
     phone_version.rs   Phone capability advertisement (endpoint 17).
     ping.rs            Ping/Pong (endpoint 2001).
+    system.rs          WatchVersion (16), SystemMessage (18), and factory
+                       registry / watch color (5001): firmware version, board,
+                       serial, platform, capabilities, color.
+    reset.rs           Reboot / recovery / factory reset / core dump (2003).
     time.rs            UTC clock sync (endpoint 11).
 
   error.rs             PebbleError.
@@ -195,8 +202,18 @@ Object path: `/org/cobble/Daemon` — session bus.
 | Method | `Notify` | `(s, s, s) → u` | title, body, subtitle → token |
 | Method | `Ping` | `() → b` | daemon liveness probe |
 | Method | `Scan` | `(d) → a(ss)` | timeout\_secs → [(address, name)] |
-| Method | `ActivateHealth` | `(q, q, y, y, b)` | height\_cm, weight\_kg, age, gender (0=male 1=female), hrm\_enabled |
+| Method | `ActivateHealth` | `(q, q, y, y, b)` | height\_cm, weight\_kg, age, gender (0=female 1=male 2=other), hrm\_enabled |
 | Method | `FetchHealthData` | `()` | flush pending health records from watch |
+| Method | `FetchHealthParams` | `()` | re-sync watch settings (health + general) from watch |
+| Method | `GetHealthProfile` | `() → a{sv}` | watch health profile: height/weight/age/gender, HRM, HR zones, units |
+| Method | `GetWatchSettings` | `() → a{sv}` | general watch settings (backlight, clock, vibration, quiet time, …) |
+| Method | `GetWatchVersion` | `() → a{sv}` | firmware version, board, serial, BT address, language, capabilities, platform |
+| Method | `GetWatchColor` | `() → a{sv}` | watch color/variant (protocol\_number, js\_name, description, watch\_type, supports\_hrm) |
+| Method | `RebootWatch` | `()` | reboot the watch |
+| Method | `ResetIntoRecovery` | `()` | reboot into recovery (PRF) firmware |
+| Method | `CreateCoreDump` | `()` | trigger a watch core dump |
+| Method | `FactoryReset` | `(b)` | DESTRUCTIVE — wipe + unpair; requires `confirm = true` |
+| Method | `Forget` | `()` | remove the Bluetooth bond (unpair); re-pairs on next reconnect |
 | Method | `ReprocessHealthData` | `()` | rebuild derived health tables from raw blobs |
 | Method | `PushWeather` | `(ay, s, s, n, y, n, n, y, n, n, b)` | location\_key (16 bytes), location\_name, forecast\_short, current\_temp\_c, current\_weather, today\_high\_c, today\_low\_c, tomorrow\_weather, tomorrow\_high\_c, tomorrow\_low\_c, is\_current\_location. Weather types: 0=PartlyCloudy 1=CloudyDay 2=LightSnow 3=LightRain 4=HeavyRain 5=HeavySnow 6=Generic 7=Sun 8=RainAndSnow |
 | Method | `ReloadConfig` | `()` | re-read config; disconnects if address/adapter changed |
@@ -205,6 +222,8 @@ Object path: `/org/cobble/Daemon` — session bus.
 | Signal | `NackReceived` | `(u)` | txn |
 | Signal | `ConnectionChanged` | `(b)` | connected |
 | Signal | `HealthDataReceived` | `(u, ay, u, u, u, y, q, ay)` | tag, app\_uuid, session\_timestamp, items\_left, crc, item\_type, item\_size, data |
+| Signal | `HealthProfileReceived` | `(a{sv})` | watch health profile, emitted on connect and on change |
+| Signal | `WatchSettingReceived` | `(s, v)` | key, value — emitted per general watch setting as it syncs |
 
 AppMessage values cross D-Bus as `(tag, variant)` pairs where tag is one of
 `u8 u16 u32 i8 i16 i32 uint int str bytes`. The Python client handles all
@@ -218,9 +237,9 @@ consume raw records without reading the database directly.
 ## Supported features
 
 ### libpebble-ble
-- [x] Connect via ble
+- [x] Connect via BLE (pairing, reconnect, MTU/connectivity handshake)
 - [x] Pings
-- [x] App Launch
+- [x] App launch / stop
 - [x] AppMessage
 - [x] Time sync
 - [ ] Notifications
@@ -232,6 +251,11 @@ consume raw records without reading the database directly.
   - [x] Steps
   - [ ] Sleep
   - [x] Heartrate
+- [x] Watch settings
+  - [x] Health profile read (height/weight/age/gender/HRM/HR zones/units)
+  - [x] General settings read (backlight, clock, vibration, quiet time, …)
+- [x] Watch info (firmware version, board, serial, BT address, capabilities, platform, color)
+- [x] Device management (reboot, recovery, factory reset, core dump, forget/unpair)
 - [ ] Music
   - [ ] Playing status
   - [ ] Controls
@@ -247,9 +271,13 @@ consume raw records without reading the database directly.
   - [x] Categorizations
 - [x] AppMessages
   - [x] External applications
+- [x] Health (data sync + profile/settings read)
+- [x] Watch info + device management (version, color, reboot/reset/forget)
 - [ ] Music
-- [x] Health
 - [x] Weather
+
+Every libpebble-ble capability is exposed over D-Bus and supported by the
+Python client — see the [D-Bus interface](#d-bus-interface-orgcobbledaemon) table.
 
 
 ## Why one repo

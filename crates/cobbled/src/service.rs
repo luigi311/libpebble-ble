@@ -25,6 +25,7 @@
 //!     ResetIntoRecovery()
 //!     CreateCoreDump()
 //!     FactoryReset(b confirm)  (DESTRUCTIVE; requires confirm=true)
+//!     Forget()  remove the Bluetooth bond (unpair); re-pairs on next reconnect
 //!     PushWeather(ay location_key, s location_name, s forecast_short, n current_temp, y current_weather, n today_high, n today_low, y tomorrow_weather, n tomorrow_high, n tomorrow_low, b is_current_location)
 //!     ReprocessHealthData()
 //!
@@ -616,6 +617,13 @@ impl CobbleDaemon {
         }
         let pebble = self.require_pebble()?;
         pebble.factory_reset().map_err(|e| DaemonError::Failed(e.to_string()))
+    }
+
+    /// Remove the watch's Bluetooth bond (unpair). The watch re-pairs on the
+    /// next reconnect.
+    async fn forget(&self) -> Result<(), DaemonError> {
+        let pebble = self.require_pebble()?;
+        pebble.forget().await.map_err(|e| DaemonError::Failed(e.to_string()))
     }
 
     /// Push weather data to the Pebble built-in weather app.
