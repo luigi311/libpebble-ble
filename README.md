@@ -195,6 +195,7 @@ Object path: `/org/cobble/Daemon` — session bus.
 |------|------|-----------|-------|
 | Property | `Connected` | `b` | watch BLE link is up |
 | Property | `WatchAddress` | `s` | configured watch address |
+| Property | `BatteryLevel` | `n` | watch battery percentage (0–100), or -1 if unknown |
 | Method | `SendAppMessage` | `(s, a{i(sv)}, b) → u` | uuid, data, wait_ack → txn |
 | Method | `LaunchApp` | `(s)` | uuid |
 | Method | `StopApp` | `(s)` | uuid |
@@ -224,6 +225,7 @@ Object path: `/org/cobble/Daemon` — session bus.
 | Signal | `HealthDataReceived` | `(u, ay, u, u, u, y, q, ay)` | tag, app\_uuid, session\_timestamp, items\_left, crc, item\_type, item\_size, data |
 | Signal | `HealthProfileReceived` | `(a{sv})` | watch health profile, emitted on connect and on change |
 | Signal | `WatchSettingReceived` | `(s, v)` | key, value — emitted per general watch setting as it syncs |
+| Signal | `BatteryChanged` | `(n)` | watch battery percentage (-1 = unknown) |
 
 AppMessage values cross D-Bus as `(tag, variant)` pairs where tag is one of
 `u8 u16 u32 i8 i16 i32 uint int str bytes`. The Python client handles all
@@ -255,6 +257,7 @@ consume raw records without reading the database directly.
   - [x] Health profile read (height/weight/age/gender/HRM/HR zones/units)
   - [x] General settings read (backlight, clock, vibration, quiet time, …)
 - [x] Watch info (firmware version, board, serial, BT address, capabilities, platform, color)
+- [x] Battery level (read + change notifications)
 - [x] Device management (reboot, recovery, factory reset, core dump, forget/unpair)
 - [ ] Music
   - [ ] Playing status
@@ -272,7 +275,7 @@ consume raw records without reading the database directly.
 - [x] AppMessages
   - [x] External applications
 - [x] Health (data sync + profile/settings read)
-- [x] Watch info + device management (version, color, reboot/reset/forget)
+- [x] Watch info + device management (version, color, battery, reboot/reset/forget)
 - [ ] Music
 - [x] Weather
 

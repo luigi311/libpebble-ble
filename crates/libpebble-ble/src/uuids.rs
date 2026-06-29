@@ -10,6 +10,12 @@ pub const MTU_CHARACTERISTIC: Uuid = uuid::uuid!("00000003-328e-0fbb-c642-1aa669
 pub const CONNECTION_PARAMS_CHARACTERISTIC: Uuid =
     uuid::uuid!("00000005-328e-0fbb-c642-1aa6699bdada");
 
+// Standard BLE Battery Service (0x180F) and Battery Level characteristic
+// (0x2A19); the watch exposes its battery percentage here as a single byte.
+pub const BATTERY_SERVICE: Uuid = uuid::uuid!("0000180f-0000-1000-8000-00805f9b34fb");
+pub const BATTERY_LEVEL_CHARACTERISTIC: Uuid =
+    uuid::uuid!("00002a19-0000-1000-8000-00805f9b34fb");
+
 // PPoGATT transport, phone-hosted server model (the working Gadgetbridge path):
 // the phone hosts a GATT server and the watch connects back to it as a client.
 // service 10000000:

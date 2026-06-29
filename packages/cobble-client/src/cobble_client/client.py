@@ -33,6 +33,8 @@ HealthDataHandler = Callable[[int, bytes, int, int, int, int, int, bytes], None]
 HealthProfileHandler = Callable[[dict], None]
 # key, value (bool / int / str)
 WatchSettingHandler = Callable[[str, object], None]
+# battery percentage 0-100, or None when unknown/disconnected
+BatteryHandler = Callable[[int | None], None]
 
 _DBUS = "org.freedesktop.DBus"
 _DBUS_PATH = "/org/freedesktop/DBus"
@@ -73,6 +75,7 @@ class CobbleClient:
         self._health_handlers: list[HealthDataHandler] = []
         self._health_profile_handlers: list[HealthProfileHandler] = []
         self._watch_setting_handlers: list[WatchSettingHandler] = []
+        self._battery_handlers: list[BatteryHandler] = []
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -120,6 +123,7 @@ class CobbleClient:
         self._iface.on_health_data_received(self._dispatch_health_data)
         self._iface.on_health_profile_received(self._dispatch_health_profile)
         self._iface.on_watch_setting_received(self._dispatch_watch_setting)
+        self._iface.on_battery_changed(self._dispatch_battery)
 
     async def close(self) -> None:
         bus, self._bus = self._bus, None
@@ -171,6 +175,12 @@ class CobbleClient:
         """The watch Bluetooth address the daemon is configured to use."""
         self._require_iface()
         return await self._iface.get_watch_address()
+
+    async def battery_level(self) -> int | None:
+        """Watch battery percentage (0-100), or None if unknown/disconnected."""
+        self._require_iface()
+        level = int(await self._iface.get_battery_level())
+        return None if level < 0 else level
 
     # ------------------------------------------------------------------ #
     # methods
@@ -476,6 +486,10 @@ class CobbleClient:
         self._watch_setting_handlers.append(fn)
         return fn
 
+    def on_battery(self, fn: BatteryHandler) -> BatteryHandler:
+        self._battery_handlers.append(fn)
+        return fn
+
     # ------------------------------------------------------------------ #
     # signal dispatch (D-Bus -> local handlers)
     # ------------------------------------------------------------------ #
@@ -522,6 +536,11 @@ class CobbleClient:
         unwrapped = _unwrap(value)
         for h in self._watch_setting_handlers:
             _safe(h, key, unwrapped)
+
+    def _dispatch_battery(self, level: int) -> None:
+        value = None if level < 0 else int(level)
+        for h in self._battery_handlers:
+            _safe(h, value)
 
     # ------------------------------------------------------------------ #
     def _require_iface(self):

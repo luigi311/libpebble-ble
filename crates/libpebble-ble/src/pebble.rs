@@ -63,8 +63,8 @@ use crate::{
         gatt_server::{start_gatt_server, PebbleGattServerHandle},
     },
     uuids::{
-        CONNECTION_PARAMS_CHARACTERISTIC, CONNECTIVITY_CHARACTERISTIC, MTU_CHARACTERISTIC,
-        PAIRING_TRIGGER_CHARACTERISTIC,
+        BATTERY_LEVEL_CHARACTERISTIC, CONNECTION_PARAMS_CHARACTERISTIC,
+        CONNECTIVITY_CHARACTERISTIC, MTU_CHARACTERISTIC, PAIRING_TRIGGER_CHARACTERISTIC,
     },
 };
 
@@ -77,6 +77,8 @@ pub type HealthDataHandler = Arc<dyn Fn(DatalogData) + Send + Sync + 'static>;
 /// Arguments: `(db_id, key, value)` — `db_id` matches `BlobDBId` (e.g. 7 =
 /// HealthParams, 12 = WatchPrefs) so a single handler can route by database.
 pub type WatchPrefHandler = Arc<dyn Fn(u8, String, Vec<u8>) + Send + Sync + 'static>;
+/// Handler called with the watch battery percentage (0–100) when it changes.
+pub type BatteryHandler = Arc<dyn Fn(u8) + Send + Sync + 'static>;
 
 struct PebbleInner {
     app_message_handlers: Vec<AppMessageHandler>,
@@ -84,6 +86,9 @@ struct PebbleInner {
     nack_handlers: Vec<NackHandler>,
     health_handlers: Vec<HealthDataHandler>,
     watch_pref_handlers: Vec<WatchPrefHandler>,
+    battery_handlers: Vec<BatteryHandler>,
+    /// Latest watch battery percentage (0–100); `None` until first read.
+    battery_level: Option<u8>,
     /// transaction_id → future resolved when watch ACK/NACKs it
     pending: HashMap<u8, oneshot::Sender<bool>>,
     /// BlobDB2 token → future resolved when watch sends the matching response
@@ -111,6 +116,8 @@ impl PebbleInner {
             nack_handlers: Vec::new(),
             health_handlers: Vec::new(),
             watch_pref_handlers: Vec::new(),
+            battery_handlers: Vec::new(),
+            battery_level: None,
             pending: HashMap::new(),
             blobdb2_pending: HashMap::new(),
             watch_version_pending: Vec::new(),
@@ -191,6 +198,17 @@ impl Pebble {
 
     pub fn on_health(&self, handler: HealthDataHandler) {
         self.inner.lock().unwrap().health_handlers.push(handler);
+    }
+
+    /// Register a handler called with the watch battery percentage (0–100)
+    /// whenever it changes (and once with the initial value on connect).
+    pub fn on_battery(&self, handler: BatteryHandler) {
+        self.inner.lock().unwrap().battery_handlers.push(handler);
+    }
+
+    /// The latest known watch battery percentage (0–100), or `None` if not yet read.
+    pub fn battery_level(&self) -> Option<u8> {
+        self.inner.lock().unwrap().battery_level
     }
 
     pub fn on_watch_pref(&self, handler: WatchPrefHandler) {
@@ -325,6 +343,9 @@ impl Pebble {
 
         // 5. Subscribe to fed9 characteristics.
         self.subscribe_fed9(&device).await;
+
+        // 5b. Read + subscribe to the standard BLE battery level.
+        self.subscribe_battery(&device).await;
 
         // 6. Write 0x09 to pairing trigger (announce server mode).
         self.write_pairing_trigger(&device).await;
@@ -540,6 +561,46 @@ impl Pebble {
                 }
             }
         }
+    }
+
+    /// Read the watch battery level once and subscribe to change notifications
+    /// (standard BLE Battery Service). Updates fire registered `on_battery`
+    /// handlers. Best-effort — a watch without the service is simply silent.
+    async fn subscribe_battery(&self, device: &Device) {
+        // Scope the cache to this session: if a Pebble is reused across
+        // reconnects, the first reading must not be deduped against a stale value.
+        self.inner.lock().unwrap().battery_level = None;
+        let Some(c) = find_char(device, BATTERY_LEVEL_CHARACTERISTIC).await else {
+            debug!("no battery characteristic; battery level unavailable");
+            return;
+        };
+        // Initial read.
+        match c.read().await {
+            Ok(data) => {
+                if let Some(&level) = data.first() {
+                    update_battery(&self.inner, level);
+                }
+            }
+            Err(e) => debug!("battery read failed: {e}"),
+        }
+        // Subscribe to notifications in the background. A short delay avoids a
+        // GATT auth error seen immediately after bonding (per libpebble3).
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            match c.notify().await {
+                Ok(stream) => {
+                    debug!("subscribed to battery level");
+                    tokio::pin!(stream);
+                    while let Some(data) = stream.next().await {
+                        if let Some(&level) = data.first() {
+                            update_battery(&inner, level);
+                        }
+                    }
+                }
+                Err(e) => warn!("subscribe to battery failed: {e}"),
+            }
+        });
     }
 
     async fn write_pairing_trigger(&self, device: &Device) {
@@ -1147,6 +1208,22 @@ fn resolve_pending(txn: u8, acked: bool, inner: &Arc<Mutex<PebbleInner>>) {
                 let _ = sender.send(acked);
             }
         }
+    }
+}
+
+/// Store a new battery level and fire `on_battery` handlers if it changed.
+fn update_battery(inner: &Arc<Mutex<PebbleInner>>, level: u8) {
+    let handlers = {
+        let mut guard = inner.lock().unwrap();
+        if guard.battery_level == Some(level) {
+            return; // unchanged — don't re-fire
+        }
+        guard.battery_level = Some(level);
+        guard.battery_handlers.clone()
+    };
+    debug!("battery level: {level}%");
+    for h in handlers {
+        h(level);
     }
 }
 

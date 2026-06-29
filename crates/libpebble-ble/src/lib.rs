@@ -26,4 +26,7 @@ pub use endpoints::system::{
 pub use endpoints::watch_pref::{decode_watch_pref, WatchPrefType, WatchPrefValue};
 pub use endpoints::Endpoint;
 pub use error::PebbleError;
-pub use pebble::{AckHandler, AppMessageHandler, HealthDataHandler, NackHandler, Pebble, WatchPrefHandler};
+pub use pebble::{
+    AckHandler, AppMessageHandler, BatteryHandler, HealthDataHandler, NackHandler, Pebble,
+    WatchPrefHandler,
+};

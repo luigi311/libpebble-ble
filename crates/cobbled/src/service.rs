@@ -5,6 +5,7 @@
 //!   Properties
 //!     Connected     b    watch BLE link is up right now
 //!     WatchAddress  s    configured watch address
+//!     BatteryLevel  n    watch battery percentage (0–100), or -1 if unknown
 //!
 //!   Methods
 //!     SendAppMessage(s uuid, a{i(sv)} data, b wait_ack) -> u txn
@@ -37,6 +38,7 @@
 //!     HealthDataReceived(u tag, ay app_uuid, u session_timestamp, u items_left, u crc, y item_type, q item_size, ay data)
 //!     HealthProfileReceived(a{sv} profile)
 //!     WatchSettingReceived(s key, v value)
+//!     BatteryChanged(n level)  watch battery percentage (-1 = unknown)
 //!
 //! AppMessage values cross the D-Bus hop as (tag, payload) pairs; see codec.rs.
 
@@ -88,6 +90,8 @@ pub enum DaemonEvent {
     AckReceived(u8),
     NackReceived(u8),
     HealthData(DatalogData),
+    /// Watch battery percentage (0–100) changed.
+    BatteryChanged(u8),
     /// Decoded "activityPreferences" record (height/weight/age/gender) from the watch.
     HealthProfile(ActivityPreferences),
     /// Decoded "hrmPreferences" record from the watch.
@@ -250,6 +254,8 @@ struct DaemonState {
     imperial_units: Option<bool>,
     /// General watch settings (BlobDB WatchPrefs db 12) decoded so far, keyed by name.
     watch_settings: HashMap<String, WatchPrefValue>,
+    /// Latest watch battery percentage (0–100); `None` when unknown/disconnected.
+    battery_level: Option<u8>,
 }
 
 #[derive(Clone)]
@@ -282,6 +288,7 @@ impl CobbleDaemon {
                 heart_rate_prefs: None,
                 imperial_units: None,
                 watch_settings: HashMap::new(),
+                battery_level: None,
             })),
         }
     }
@@ -349,6 +356,25 @@ impl CobbleDaemon {
         self.state.lock().unwrap().watch_settings.insert(key, value);
     }
 
+    /// Cache a battery level, but only while connected and only if it changed.
+    /// Returns true when the cache was updated (caller should emit a signal).
+    /// Dropping events while disconnected preserves the "-1 = unknown" contract
+    /// against late notifications from a torn-down session.
+    pub(crate) fn set_battery_level(&self, level: u8) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if !state.connected || state.battery_level == Some(level) {
+            return false;
+        }
+        state.battery_level = Some(level);
+        true
+    }
+
+    /// The battery level held by the live watch session, if any.
+    pub(crate) fn session_battery_level(&self) -> Option<u8> {
+        let pebble = self.state.lock().unwrap().pebble.clone();
+        pebble.and_then(|p| p.battery_level())
+    }
+
     fn merged_profile(s: &DaemonState) -> Option<HealthProfile> {
         let p = s.health_profile?;
         let hrm = s.hrm_prefs;
@@ -390,6 +416,7 @@ impl CobbleDaemon {
         state.heart_rate_prefs = None;
         state.imperial_units = None;
         state.watch_settings.clear();
+        state.battery_level = None;
         let _ = state.event_tx.send(DaemonEvent::ConnectionChanged(false));
     }
 
@@ -444,6 +471,12 @@ impl CobbleDaemon {
     #[zbus(property)]
     fn watch_address(&self) -> String {
         self.state.lock().unwrap().address.clone()
+    }
+
+    /// Watch battery percentage (0–100), or -1 if unknown/disconnected.
+    #[zbus(property)]
+    fn battery_level(&self) -> i16 {
+        self.state.lock().unwrap().battery_level.map(i16::from).unwrap_or(-1)
     }
 
     // ---- Methods ----
@@ -770,6 +803,13 @@ impl CobbleDaemon {
         key: &str,
         value: OwnedValue,
     ) -> zbus::Result<()>;
+
+    /// Emitted when the watch battery percentage changes. -1 means unknown.
+    #[zbus(signal)]
+    pub async fn battery_changed(
+        signal_emitter: &SignalEmitter<'_>,
+        level: i16,
+    ) -> zbus::Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -801,6 +841,29 @@ pub async fn run_signal_emitter(
             DaemonEvent::ConnectionChanged(c) => {
                 let _ = CobbleDaemon::connection_changed(emitter, c).await;
                 let _ = iface.get().await.connected_changed(iface.signal_emitter()).await;
+                if c {
+                    // The connect-time battery read can be queued before this
+                    // event and dropped by the disconnected gate; deliver it now.
+                    if let Some(level) = daemon.session_battery_level() {
+                        if daemon.set_battery_level(level) {
+                            let _ =
+                                iface.get().await.battery_level_changed(iface.signal_emitter()).await;
+                            let _ = CobbleDaemon::battery_changed(emitter, i16::from(level)).await;
+                        }
+                    }
+                } else {
+                    // Battery is unknown while disconnected (state was cleared).
+                    let _ = iface.get().await.battery_level_changed(iface.signal_emitter()).await;
+                    let _ = CobbleDaemon::battery_changed(emitter, -1).await;
+                }
+            }
+            DaemonEvent::BatteryChanged(level) => {
+                // Gated on connected so a late event after disconnect can't
+                // resurrect a stale level past the -1 contract.
+                if daemon.set_battery_level(level) {
+                    let _ = iface.get().await.battery_level_changed(iface.signal_emitter()).await;
+                    let _ = CobbleDaemon::battery_changed(emitter, i16::from(level)).await;
+                }
             }
             DaemonEvent::AppMessageReceived { uuid, data } => {
                 let wire = encode_wire_dict(&data);
