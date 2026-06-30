@@ -6,13 +6,15 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 	dh $@
 
 override_dh_auto_build:
-	cargo build --release --bin cobbled
+	cargo build --release --bin cobbled --bin cobble
 
 override_dh_auto_install:
 	install -Dm755 target/release/cobbled \
 		debian/cobbled/usr/bin/cobbled
 	install -Dm644 data/cobbled.service \
 		debian/cobbled/usr/lib/systemd/user/cobbled.service
+	install -Dm755 target/release/cobble \
+		debian/cobble/usr/bin/cobble
 
 override_dh_auto_test:
 	: # tests require a live BlueZ/D-Bus session; run separately in CI

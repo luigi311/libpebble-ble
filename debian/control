@@ -7,7 +7,9 @@ Build-Depends: debhelper-compat (= 13),
                cargo,
                rustc,
                pkg-config,
-               libexpat-dev
+               libexpat-dev,
+               libfontconfig-dev,
+               libfreetype-dev
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
 
@@ -21,3 +23,15 @@ Description: Cobble — Pebble smartwatch BLE daemon
  .
  The daemon links libdbus statically; there is no runtime libdbus dependency.
  BlueZ is accessed through the system D-Bus.
+
+Package: cobble
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, cobbled,
+         libwayland-client0, libxkbcommon0
+Description: Cobble — Pebble smartwatch GUI
+ A Slint GUI front-end for the Cobble Pebble daemon. Displays synced health
+ data (steps, sleep, workouts), watch info and battery level, and edits the
+ daemon configuration. Talks to the cobbled daemon over the session D-Bus and
+ reads the health database directly.
+ .
+ Uses the software renderer; launch it from a terminal with `cobble`.
