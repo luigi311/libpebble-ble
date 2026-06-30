@@ -213,6 +213,8 @@ impl Pebble {
             .adapter(adapter_name)
             .map_err(|e| PebbleError::Other(format!("adapter {adapter_name}: {e}")))?;
 
+        // Set discoverable timeout so device is freed after specified time
+        adapter.set_discoverable_timeout(timeout_secs as u32).await?;
         let mut stream = adapter.discover_devices().await?;
         let mut found: Vec<(String, String)> = Vec::new();
 
@@ -222,7 +224,7 @@ impl Pebble {
                     if let Ok(device) = adapter.device(addr) {
                         let name = device.name().await.ok().flatten().unwrap_or_default();
                         if name.to_lowercase().contains("pebble") {
-                            info!("found Pebble: {addr} \"{name}\"");
+                            debug!("found Pebble: {addr} \"{name}\"");
                             found.push((addr.to_string(), name));
                         }
                     }
@@ -518,6 +520,16 @@ impl Pebble {
     ) -> Result<Device, PebbleError> {
         let mut last_err: Option<PebbleError> = None;
         for i in 1..=attempts {
+            // Refresh BlueZ's devices if watch is not found on first attempt. A known
+            // BLE device that hasn't been seen recently often won't connect until
+            // something runs a discovery scan.
+            // Best-effort: scan for 3 * attempt number in case of slow detection
+            // wait 1 second afterward to be sure bluetooth adapter is not in use
+            if i > 1 {
+                let scan_duration: f64 = 3.0 * i as f64;
+                let _ = Pebble::scan(&adapter.name(), scan_duration).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            };
             let device = adapter.device(address)?;
             let result = timeout(
                 Duration::from_secs_f64(conn_timeout),
