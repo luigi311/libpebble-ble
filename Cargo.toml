@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/libpebble-ble", "crates/cobbled"]
+members = ["crates/libpebble-ble", "crates/cobbled", "crates/cobble-client", "crates/cobble"]
 resolver = "2"
 
 [profile.release]

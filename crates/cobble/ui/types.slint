@@ -1,0 +1,40 @@
+// Shared data structures (generated as Rust structs via slint::include_modules!).
+
+export struct DaySteps {
+    label: string,
+    steps-label: string,
+    fraction: float,
+    bar-start: int,
+    bar-end: int,
+}
+
+export struct SleepBar {
+    label: string,
+    bar-start: int,
+    bar-end: int,
+    light-fraction: float,   // light sleep height / max night height
+    deep-fraction: float,    // deep sleep height / max night height
+    total-label: string,     // "7h 30m"
+    deep-label: string,      // "2h 15m deep"
+}
+
+export struct HealthSession {
+    type-name: string,
+    start-label: string,
+    duration-label: string,
+    has-metrics: bool,
+    metrics-label: string,
+}
+
+export struct SleepSegment {
+    start-frac: float,
+    width-frac: float,
+    is-deep: bool,
+}
+
+export struct SleepNight {
+    label: string,
+    duration-label: string,
+    bar-start: int,
+    segments: [SleepSegment],
+}

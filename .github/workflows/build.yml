@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  # ── Rust daemon .deb ────────────────────────────────────────────────────────
+  # ── Rust daemon/gui .deb ────────────────────────────────────────────────────────
   build-deb:
     permissions:
       contents: write
@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04
             arch: amd64
           - runner: ubuntu-24.04-arm
             arch: arm64
@@ -27,12 +27,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -47,7 +47,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             debhelper devscripts \
-            pkg-config libexpat-dev build-essential
+            pkg-config libexpat-dev build-essential \
+            libfontconfig-dev libfreetype-dev
 
       - name: Verify tag matches changelog version
         if: github.event_name == 'release'
@@ -67,17 +68,25 @@ jobs:
           dpkg-buildpackage -us -uc -b -d
           mkdir -p dist
           mv ../cobbled_*_${{ matrix.arch }}.deb dist/
+          mv ../cobble_*_${{ matrix.arch }}.deb dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cobbled-deb-${{ matrix.arch }}
-          path: dist/*.deb
+          path: dist/cobbled_*.deb
+          if-no-files-found: error
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: cobble-deb-${{ matrix.arch }}
+          path: dist/cobble_*.deb
           if-no-files-found: error
 
       - name: Attach .deb to release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*.deb
 
@@ -88,9 +97,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -100,7 +109,7 @@ jobs:
           python -m build packages/cobble-client --outdir dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cobble-client-wheel
           path: dist/*.whl
@@ -108,6 +117,6 @@ jobs:
 
       - name: Attach wheel to release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*.whl

@@ -1,0 +1,470 @@
+// Main application window. Reusable components live in the sibling .slint files:
+//   theme.slint   – Palette
+//   types.slint   – shared data structs
+//   widgets.slint – generic UI primitives
+//   charts.slint  – health charts/lists
+
+import { Palette } from "theme.slint";
+import { DaySteps, SleepBar, HealthSession, SleepNight } from "types.slint";
+import { Toggle, FormField, InfoRow, SettingsRow, ActionButton, PeriodControl } from "widgets.slint";
+import { StepsChart, SleepChart, SessionList, SleepTimingStrip } from "charts.slint";
+
+export component AppWindow inherits Window {
+    title: "Pebble";
+    background: Palette.bg;
+    preferred-width: 400px;
+    preferred-height: 780px;
+
+    // ── Status ──
+    in property <bool> daemon-running: false;
+    in property <bool> watch-connected: false;
+
+    // ── Device tab data ──
+    in property <int>    battery-level: -1;   // 0–100, or -1 = unknown
+    in property <string> wi-model;
+    in property <string> wi-firmware;
+    in property <string> wi-color;
+    in property <string> wi-board;
+    in property <string> wi-serial;
+    in property <string> wi-bt;
+    in property <string> wi-language;
+
+    // ── Workout tab data ──
+    in property <[DaySteps]> daily-steps;
+    in property <string> today-steps-label: "0 steps today";
+    in property <[HealthSession]> sessions;
+
+    // ── Sleep tab data ──
+    in property <[SleepBar]> sleep-bars;
+    in property <string> sleep-label: "No sleep data";
+    in property <[SleepNight]> sleep-nights;
+
+    // ── Config ──
+    in-out property <string> cfg-address;
+    in-out property <string> cfg-adapter: "hci0";
+    in-out property <bool>   cfg-verbose: false;
+    in-out property <string> cfg-db;
+    in property <string> save-status: "";
+
+    // ── Period navigation ──
+    in property <string> workout-period-label: "This Week";
+    in property <bool>   workout-can-forward: false;
+    in property <string> sleep-period-label: "This Week";
+    in property <bool>   sleep-can-forward: false;
+
+    // ── Callbacks ──
+    callback save-config();
+    callback refresh-data();
+    callback refresh-device();
+    // Device actions (Settings ▸ Device Actions)
+    callback reboot-watch();
+    callback reset-into-recovery();
+    callback create-core-dump();
+    callback forget-watch();
+    callback factory-reset();
+    in-out property <string> action-status: "";
+    in-out property <bool> action-error: false;
+    callback workout-period-changed(int);
+    callback workout-go-back();
+    callback workout-go-forward();
+    callback sleep-period-changed(int);
+    callback sleep-go-back();
+    callback sleep-go-forward();
+    callback bar-tapped(int, int);
+
+    // ── Internal state ──
+    property <int> active-tab: 0;
+    property <int> settings-page: 0;   // 0 = category list, 1 = config, 2 = device actions
+    property <bool> confirm-factory: false;
+    property <bool> confirm-recovery: false;
+    property <int> workout-period: 1;
+    property <int> sleep-period-val: 1;
+    property <int> sel-bar-start: -1;
+    property <int> sel-sleep-bar-start: -1;
+
+    VerticalLayout {
+
+        // ── Header ───────────────────────────────────────────────────────────
+        Rectangle {
+            height: 56px; background: Palette.header;
+            HorizontalLayout {
+                padding-left: 20px; padding-right: 20px;
+                Text { text: "Pebble"; color: Palette.text; font-size: 20px; font-weight: 700; vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                Rectangle {
+                    width: 8px; height: 8px; border-radius: 4px;
+                    y: (parent.height - self.height) / 2;
+                    background: root.watch-connected ? Palette.green
+                               : root.daemon-running ? Palette.orange
+                               : Palette.red;
+                }
+                Text {
+                    text: root.watch-connected ? " Connected"
+                         : root.daemon-running ? " Daemon only"
+                         : " Offline";
+                    color: Palette.muted; font-size: 12px; vertical-alignment: center;
+                }
+            }
+        }
+
+        // ── Content area ─────────────────────────────────────────────────────
+        Rectangle {
+            vertical-stretch: 1; clip: true;
+
+            // ── Device tab ───────────────────────────────────────────────────
+            if active-tab == 0: Flickable {
+                viewport-height: device-page.preferred-height;
+                device-page := VerticalLayout {
+                    padding: 20px; spacing: 16px; alignment: start;
+
+                    // Connection status
+                    Rectangle {
+                        background: Palette.surface; border-radius: 10px; height: 52px;
+                        HorizontalLayout {
+                            padding-left: 16px; padding-right: 16px;
+                            Text { text: "Status"; color: Palette.text; font-size: 14px; vertical-alignment: center; }
+                            Rectangle { horizontal-stretch: 1; }
+                            Rectangle {
+                                width: 8px; height: 8px; border-radius: 4px;
+                                y: (parent.height - self.height) / 2;
+                                background: root.watch-connected ? Palette.green
+                                           : root.daemon-running ? Palette.orange
+                                           : Palette.red;
+                            }
+                            Text {
+                                text: root.watch-connected ? "  Connected"
+                                     : root.daemon-running ? "  Disconnected"
+                                     : "  Daemon offline";
+                                color: Palette.muted; font-size: 13px; vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Battery
+                    Rectangle {
+                        background: Palette.surface; border-radius: 10px; height: 70px;
+                        VerticalLayout {
+                            padding: 14px; spacing: 8px;
+                            HorizontalLayout {
+                                Text { text: "Battery"; color: Palette.muted; font-size: 13px; }
+                                Rectangle { horizontal-stretch: 1; }
+                                Text {
+                                    text: root.battery-level >= 0 ? root.battery-level + "%" : "Unknown";
+                                    color: Palette.text; font-size: 14px; font-weight: 700;
+                                }
+                            }
+                            Rectangle {
+                                height: 8px; border-radius: 4px; background: Palette.bg;
+                                Rectangle {
+                                    x: 0; height: parent.height; border-radius: 4px;
+                                    width: root.battery-level >= 0 ? parent.width * root.battery-level / 100 : 0px;
+                                    background: root.battery-level <= 20 ? Palette.red : Palette.green;
+                                }
+                            }
+                        }
+                    }
+
+                    // Watch info
+                    HorizontalLayout {
+                        height: 28px;
+                        Text { text: "Watch Info"; color: Palette.text; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+                        Rectangle { horizontal-stretch: 1; }
+                        Rectangle {
+                            width: 70px; height: 28px; border-radius: 6px; background: Palette.surface;
+                            Text { text: "Refresh"; color: Palette.accent; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { clicked => { root.refresh-device(); } }
+                        }
+                    }
+                    if root.watch-connected: Rectangle {
+                        background: Palette.surface; border-radius: 10px;
+                        VerticalLayout {
+                            padding: 16px; spacing: 8px;
+                            InfoRow { label: "Model";     value: root.wi-model; }
+                            InfoRow { label: "Firmware";  value: root.wi-firmware; }
+                            InfoRow { label: "Color";     value: root.wi-color; }
+                            InfoRow { label: "Board";     value: root.wi-board; }
+                            InfoRow { label: "Serial";    value: root.wi-serial; }
+                            InfoRow { label: "Bluetooth"; value: root.wi-bt; }
+                            InfoRow { label: "Language";  value: root.wi-language; }
+                        }
+                    }
+                    if !root.watch-connected: Text {
+                        text: root.daemon-running ? "Connect a watch to see its details." : "Start the daemon to connect a watch.";
+                        color: Palette.muted; font-size: 13px; horizontal-alignment: center;
+                    }
+                }
+            }
+
+            // ── Workout tab ──────────────────────────────────────────────────
+            if active-tab == 1: VerticalLayout {
+
+                PeriodControl {
+                    period: root.workout-period;
+                    period-label: root.workout-period-label;
+                    can-forward: root.workout-can-forward;
+                    period-changed(p) => {
+                        root.workout-period = p;
+                        root.sel-bar-start = -1;
+                        root.workout-period-changed(p);
+                    }
+                    go-back => { root.sel-bar-start = -1; root.workout-go-back(); }
+                    go-forward => { root.sel-bar-start = -1; root.workout-go-forward(); }
+                }
+
+                StepsChart {
+                    model: root.daily-steps;
+                    today-label: root.today-steps-label;
+                    selected-bar-start <=> root.sel-bar-start;
+                    bar-tapped(s, e) => { root.bar-tapped(s, e); }
+                }
+
+                // "Recent Activity" row with Refresh
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 16px; height: 40px;
+                    Text {
+                        text: "Recent Activity";
+                        color: Palette.text; font-size: 15px; font-weight: 700; vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Rectangle {
+                        width: 70px; height: 30px; border-radius: 6px; background: Palette.surface;
+                        y: (parent.height - self.height) / 2;
+                        Text { text: "Refresh"; color: Palette.accent; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { clicked => { root.sel-bar-start = -1; root.refresh-data(); } }
+                    }
+                }
+
+                SessionList { model: root.sessions; }
+            }
+
+            // ── Sleep tab ────────────────────────────────────────────────────
+            if active-tab == 2: VerticalLayout {
+
+                PeriodControl {
+                    period: root.sleep-period-val;
+                    period-label: root.sleep-period-label;
+                    can-forward: root.sleep-can-forward;
+                    period-changed(p) => {
+                        root.sleep-period-val = p;
+                        root.sel-sleep-bar-start = -1;
+                        root.sleep-period-changed(p);
+                    }
+                    go-back => { root.sel-sleep-bar-start = -1; root.sleep-go-back(); }
+                    go-forward => { root.sel-sleep-bar-start = -1; root.sleep-go-forward(); }
+                }
+
+                SleepChart {
+                    model: root.sleep-bars;
+                    sleep-label: root.sleep-label;
+                    selected-bar-start <=> root.sel-sleep-bar-start;
+                }
+
+                SleepTimingStrip {
+                    model: root.sleep-nights;
+                    period: root.sleep-period-val;
+                    selected-bar-start <=> root.sel-sleep-bar-start;
+                    refresh => { root.sel-sleep-bar-start = -1; root.refresh-data(); }
+                }
+            }
+
+            // ── Settings tab ─────────────────────────────────────────────────
+            // settings-page 0 = category menu, 1 = Config detail.
+            if active-tab == 3 && root.settings-page == 0: Flickable {
+                viewport-height: settings-menu.preferred-height;
+                settings-menu := VerticalLayout {
+                    padding: 20px; spacing: 12px; alignment: start;
+
+                    // Daemon status
+                    Rectangle {
+                        background: Palette.surface; border-radius: 10px; height: 52px;
+                        HorizontalLayout {
+                            padding-left: 16px; padding-right: 16px;
+                            Text { text: "Daemon"; color: Palette.text; font-size: 14px; vertical-alignment: center; }
+                            Rectangle { horizontal-stretch: 1; }
+                            Rectangle {
+                                width: 8px; height: 8px; border-radius: 4px;
+                                y: (parent.height - self.height) / 2;
+                                background: root.daemon-running ? Palette.green : Palette.red;
+                            }
+                            Text {
+                                text: root.daemon-running ? "  Running" : "  Not running";
+                                color: root.daemon-running ? Palette.green : Palette.red;
+                                font-size: 13px; vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Category list
+                    SettingsRow {
+                        label: "Config";
+                        sublabel: "Watch address, BLE adapter, logging, database";
+                        clicked => { root.settings-page = 1; }
+                    }
+                    SettingsRow {
+                        label: "Device Actions";
+                        sublabel: "Reboot, recovery, core dump, forget, factory reset";
+                        clicked => { root.action-status = ""; root.action-error = false; root.confirm-factory = false; root.confirm-recovery = false; root.settings-page = 2; }
+                    }
+                }
+            }
+
+            // ── Settings ▸ Config ─────────────────────────────────────────────
+            if active-tab == 3 && root.settings-page == 1: Flickable {
+                viewport-height: config-page.preferred-height;
+                config-page := VerticalLayout {
+                    padding: 20px; spacing: 16px; alignment: start;
+
+                    // Back header
+                    HorizontalLayout {
+                        height: 28px; spacing: 8px;
+                        Rectangle {
+                            width: 32px; height: 28px; border-radius: 6px; background: Palette.surface;
+                            Text { text: "‹"; color: Palette.accent; font-size: 22px; horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { clicked => { root.settings-page = 0; } }
+                        }
+                        Text { text: "Config"; color: Palette.text; font-size: 17px; font-weight: 700; vertical-alignment: center; }
+                    }
+
+                    FormField { label: "Watch Address"; value <=> root.cfg-address; placeholder: "E6:94:0A:D4:D5:DC"; }
+                    FormField { label: "BLE Adapter"; value <=> root.cfg-adapter; placeholder: "hci0"; }
+                    Rectangle {
+                        background: Palette.surface; border-radius: 10px; height: 52px;
+                        HorizontalLayout {
+                            padding-left: 16px; padding-right: 16px;
+                            Text { text: "Verbose Logging"; color: Palette.text; font-size: 14px; vertical-alignment: center; }
+                            Rectangle { horizontal-stretch: 1; }
+                            Toggle { checked <=> root.cfg-verbose; y: (parent.height - self.height) / 2; }
+                        }
+                    }
+                    FormField { label: "Database Path"; value <=> root.cfg-db; placeholder: "~/.local/share/cobbled/health.db"; }
+                    Rectangle {
+                        height: 52px; border-radius: 10px; background: Palette.accent;
+                        Text { text: "Save & Apply"; color: white; font-size: 16px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { clicked => { root.save-config(); } }
+                    }
+                    if root.save-status != "": Text {
+                        text: root.save-status;
+                        color: root.save-status == "Saved." ? Palette.green : Palette.red;
+                        font-size: 13px; horizontal-alignment: center;
+                    }
+                }
+            }
+
+            // ── Settings ▸ Device Actions ─────────────────────────────────────
+            if active-tab == 3 && root.settings-page == 2: Flickable {
+                viewport-height: actions-page.preferred-height;
+                actions-page := VerticalLayout {
+                    padding: 20px; spacing: 12px; alignment: start;
+
+                    // Back header
+                    HorizontalLayout {
+                        height: 28px; spacing: 8px;
+                        Rectangle {
+                            width: 32px; height: 28px; border-radius: 6px; background: Palette.surface;
+                            Text { text: "‹"; color: Palette.accent; font-size: 22px; horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { clicked => { root.settings-page = 0; root.confirm-factory = false; root.confirm-recovery = false; root.action-status = ""; root.action-error = false; } }
+                        }
+                        Text { text: "Device Actions"; color: Palette.text; font-size: 17px; font-weight: 700; vertical-alignment: center; }
+                    }
+
+                    if !root.watch-connected: Text {
+                        text: "Watch not connected — most actions are unavailable.";
+                        color: Palette.muted; font-size: 12px; horizontal-alignment: center;
+                    }
+
+                    ActionButton {
+                        label: "Reboot Watch"; enabled: root.watch-connected;
+                        clicked => { root.confirm-factory = false; root.confirm-recovery = false; root.action-error = false; root.action-status = "Reboot sent."; root.reboot-watch(); }
+                    }
+                    ActionButton {
+                        label: root.confirm-recovery ? "Tap again to confirm Recovery" : "Reboot into Recovery";
+                        danger: root.confirm-recovery; enabled: root.watch-connected;
+                        clicked => {
+                            if (root.confirm-recovery) {
+                                root.confirm-recovery = false;
+                                root.action-error = false;
+                                root.action-status = "Entering recovery…";
+                                root.reset-into-recovery();
+                            } else {
+                                root.confirm-recovery = true;
+                                root.confirm-factory = false;
+                            }
+                        }
+                    }
+                    ActionButton {
+                        label: "Create Core Dump"; enabled: root.watch-connected;
+                        clicked => { root.confirm-factory = false; root.confirm-recovery = false; root.action-error = false; root.action-status = "Core dump requested…"; root.create-core-dump(); }
+                    }
+                    ActionButton {
+                        label: "Forget (Unpair)";
+                        clicked => { root.confirm-factory = false; root.confirm-recovery = false; root.action-error = false; root.action-status = "Removing bond…"; root.forget-watch(); }
+                    }
+                    ActionButton {
+                        label: root.confirm-factory ? "Tap again to confirm Factory Reset" : "Factory Reset (erases watch)";
+                        danger: true; enabled: root.watch-connected;
+                        clicked => {
+                            if (root.confirm-factory) {
+                                root.confirm-factory = false;
+                                root.action-error = false;
+                                root.action-status = "Factory reset sent.";
+                                root.factory-reset();
+                            } else {
+                                root.confirm-factory = true;
+                                root.confirm-recovery = false;
+                            }
+                        }
+                    }
+
+                    if root.action-status != "": Text {
+                        text: root.action-status;
+                        color: root.action-error ? Palette.red : Palette.green;
+                        font-size: 13px; horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // ── Bottom tab bar ────────────────────────────────────────────────────
+        Rectangle {
+            height: 64px; background: Palette.header;
+            HorizontalLayout {
+                Rectangle {
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        alignment: center; spacing: 2px; padding: 6px;
+                        Text { text: "◉"; font-size: 20px; horizontal-alignment: center; color: active-tab == 0 ? Palette.accent : Palette.muted; }
+                        Text { text: "Device"; font-size: 11px; horizontal-alignment: center; color: active-tab == 0 ? Palette.accent : Palette.muted; }
+                    }
+                    TouchArea { clicked => { active-tab = 0; } }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        alignment: center; spacing: 2px; padding: 6px;
+                        Text { text: "♥"; font-size: 20px; horizontal-alignment: center; color: active-tab == 1 ? Palette.accent : Palette.muted; }
+                        Text { text: "Workout"; font-size: 11px; horizontal-alignment: center; color: active-tab == 1 ? Palette.accent : Palette.muted; }
+                    }
+                    TouchArea { clicked => { active-tab = 1; } }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        alignment: center; spacing: 2px; padding: 6px;
+                        Text { text: "☽"; font-size: 20px; horizontal-alignment: center; color: active-tab == 2 ? Palette.accent : Palette.muted; }
+                        Text { text: "Sleep"; font-size: 11px; horizontal-alignment: center; color: active-tab == 2 ? Palette.accent : Palette.muted; }
+                    }
+                    TouchArea { clicked => { active-tab = 2; } }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        alignment: center; spacing: 2px; padding: 6px;
+                        Text { text: "⚙"; font-size: 20px; horizontal-alignment: center; color: active-tab == 3 ? Palette.accent : Palette.muted; }
+                        Text { text: "Settings"; font-size: 11px; horizontal-alignment: center; color: active-tab == 3 ? Palette.accent : Palette.muted; }
+                    }
+                    TouchArea { clicked => { active-tab = 3; settings-page = 0; confirm-factory = false; confirm-recovery = false; action-status = ""; action-error = false; } }
+                }
+            }
+        }
+    }
+}

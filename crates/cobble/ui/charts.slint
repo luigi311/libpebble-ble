@@ -1,0 +1,268 @@
+// Health-data chart and list components.
+
+import { Palette } from "theme.slint";
+import { DaySteps, SleepBar, HealthSession, SleepNight, SleepSegment } from "types.slint";
+
+// ─── Step bar chart ──────────────────────────────────────────────────────────
+
+export component StepsChart inherits VerticalLayout {
+    in property <[DaySteps]> model;
+    in property <string> today-label;
+    in-out property <int> selected-bar-start: -1;
+    callback bar-tapped(int, int);
+
+    padding: 16px; spacing: 10px;
+
+    HorizontalLayout {
+        Text { text: "Steps"; color: Palette.text; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        Text { text: today-label; color: Palette.muted; font-size: 13px; vertical-alignment: center; }
+    }
+
+    Rectangle {
+        background: Palette.surface; border-radius: 12px; height: 200px; clip: true;
+        HorizontalLayout {
+            spacing: 4px; padding: 14px;
+            for day in model: Rectangle {
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    Rectangle { vertical-stretch: 1; }
+                    Rectangle {
+                        background: (root.selected-bar-start == -1 || root.selected-bar-start == day.bar-start)
+                                    ? Palette.accent : #4a9eff30;
+                        border-radius: 3px;
+                        height: max(4px, day.fraction * 148px);
+                        animate background { duration: 150ms; easing: ease-in-out; }
+                    }
+                    Text {
+                        text: day.label; color: Palette.muted; font-size: 10px;
+                        horizontal-alignment: center; height: 18px;
+                    }
+                }
+                TouchArea {
+                    width: parent.width; height: parent.height;
+                    clicked => {
+                        if root.selected-bar-start == day.bar-start {
+                            root.selected-bar-start = -1;
+                            root.bar-tapped(-1, -1);
+                        } else {
+                            root.selected-bar-start = day.bar-start;
+                            root.bar-tapped(day.bar-start, day.bar-end);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ─── Sleep stacked bar chart ──────────────────────────────────────────────────
+
+export component SleepChart inherits VerticalLayout {
+    in property <[SleepBar]> model;
+    in property <string> sleep-label;
+    in-out property <int> selected-bar-start: -1;
+    callback bar-tapped(int, int);
+
+    padding: 16px; spacing: 10px;
+
+    HorizontalLayout {
+        Text { text: "Sleep"; color: Palette.text; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        Text { text: sleep-label; color: Palette.muted; font-size: 13px; vertical-alignment: center; }
+    }
+
+    // Legend
+    HorizontalLayout {
+        spacing: 16px;
+        HorizontalLayout {
+            spacing: 5px;
+            Rectangle { width: 10px; height: 10px; border-radius: 2px; background: Palette.accent; y: 2px; }
+            Text { text: "Light"; color: Palette.muted; font-size: 11px; }
+        }
+        HorizontalLayout {
+            spacing: 5px;
+            Rectangle { width: 10px; height: 10px; border-radius: 2px; background: Palette.deep-sleep; y: 2px; }
+            Text { text: "Deep"; color: Palette.muted; font-size: 11px; }
+        }
+    }
+
+    Rectangle {
+        background: Palette.surface; border-radius: 12px; height: 200px; clip: true;
+        HorizontalLayout {
+            spacing: 4px; padding: 14px;
+            for night in model: Rectangle {
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    Rectangle { vertical-stretch: 1; }
+                    // Light sleep — top of bar stack
+                    Rectangle {
+                        background: (root.selected-bar-start == -1 || root.selected-bar-start == night.bar-start)
+                                    ? Palette.accent : #4a9eff30;
+                        height: night.light-fraction * 148px;
+                        animate background { duration: 150ms; easing: ease-in-out; }
+                    }
+                    // Deep sleep — bottom of bar stack
+                    Rectangle {
+                        background: (root.selected-bar-start == -1 || root.selected-bar-start == night.bar-start)
+                                    ? Palette.deep-sleep : #7c3aed30;
+                        border-radius: 3px;
+                        height: night.deep-fraction * 148px;
+                        animate background { duration: 150ms; easing: ease-in-out; }
+                    }
+                    Text {
+                        text: night.label; color: Palette.muted; font-size: 10px;
+                        horizontal-alignment: center; height: 18px;
+                    }
+                }
+                TouchArea {
+                    width: parent.width; height: parent.height;
+                    clicked => {
+                        if root.selected-bar-start == night.bar-start {
+                            root.selected-bar-start = -1;
+                            root.bar-tapped(-1, -1);
+                        } else {
+                            root.selected-bar-start = night.bar-start;
+                            root.bar-tapped(night.bar-start, night.bar-end);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ─── Session list ─────────────────────────────────────────────────────────────
+
+export component SessionList inherits Flickable {
+    in property <[HealthSession]> model;
+    vertical-stretch: 1;
+    viewport-height: items.preferred-height;
+    items := VerticalLayout {
+        alignment: start;
+        for s in root.model: Rectangle {
+            height: s.has-metrics ? 108px : 80px;
+            Rectangle {
+                x: 16px; y: 4px; width: parent.width - 32px; height: parent.height - 8px;
+                background: Palette.surface; border-radius: 10px;
+                VerticalLayout {
+                    padding: 12px; spacing: 4px;
+                    HorizontalLayout {
+                        Text { text: s.type-name; color: Palette.text; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: s.start-label; color: Palette.muted; font-size: 12px; vertical-alignment: center; }
+                    }
+                    Text { text: s.duration-label; color: Palette.muted; font-size: 13px; }
+                    if s.has-metrics: Text { text: s.metrics-label; color: Palette.accent; font-size: 12px; }
+                }
+            }
+        }
+    }
+}
+
+// ─── Sleep timing strip ───────────────────────────────────────────────────────
+
+export component SleepTimingStrip inherits VerticalLayout {
+    in property <[SleepNight]> model;
+    in property <int> period;
+    in-out property <int> selected-bar-start: -1;
+    callback refresh();
+
+    vertical-stretch: 1;
+    padding-left: 16px; padding-right: 16px; padding-top: 8px; padding-bottom: 16px;
+    spacing: 10px;
+
+    HorizontalLayout {
+        Text { text: "Sleep Sessions"; color: Palette.text; font-size: 15px; font-weight: 700; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        HorizontalLayout {
+            spacing: 12px;
+            y: (parent.height - self.height) / 2;
+            HorizontalLayout {
+                spacing: 5px;
+                Rectangle { width: 10px; height: 10px; border-radius: 2px; background: Palette.accent; y: 2px; }
+                Text { text: "Light"; color: Palette.muted; font-size: 11px; vertical-alignment: center; }
+            }
+            HorizontalLayout {
+                spacing: 5px;
+                Rectangle { width: 10px; height: 10px; border-radius: 2px; background: Palette.deep-sleep; y: 2px; }
+                Text { text: "Deep"; color: Palette.muted; font-size: 11px; vertical-alignment: center; }
+            }
+        }
+        Rectangle { width: 8px; }
+        Rectangle {
+            width: 70px; height: 30px; border-radius: 6px; background: Palette.surface;
+            y: (parent.height - self.height) / 2;
+            Text { text: "Refresh"; color: Palette.accent; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { clicked => { root.refresh(); } }
+        }
+    }
+
+    Rectangle {
+        background: Palette.surface; border-radius: 12px; clip: true;
+        vertical-stretch: 1;
+
+        VerticalLayout {
+            padding: 12px; spacing: 4px;
+
+            Flickable {
+                vertical-stretch: 1;
+                viewport-height: nights.preferred-height;
+                nights := VerticalLayout {
+                    alignment: start;
+                    for night in root.model: Rectangle {
+                        height: root.period == 2 ? 32px : 44px;
+                        opacity: root.selected-bar-start == -1 || root.selected-bar-start == night.bar-start ? 1.0 : 0.35;
+                        animate opacity { duration: 150ms; }
+
+                        HorizontalLayout {
+                            height: parent.height;
+                            spacing: 8px;
+                            padding-top: 6px; padding-bottom: 6px;
+
+                            // "Mon 10:47pm" label
+                            Text {
+                                width: 88px;
+                                text: night.label;
+                                color: Palette.muted; font-size: 10px;
+                                horizontal-alignment: left; vertical-alignment: center;
+                            }
+
+                            // Duration-proportional stage bar
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                background: #1e1e40;
+                                border-radius: 3px;
+                                clip: true;
+                                for seg in night.segments: Rectangle {
+                                    x: seg.start-frac * parent.width;
+                                    width: max(2px, seg.width-frac * parent.width);
+                                    height: parent.height;
+                                    background: seg.is-deep ? Palette.deep-sleep : Palette.accent;
+                                }
+                            }
+
+                            // Total duration
+                            Text {
+                                width: 52px;
+                                text: night.duration-label;
+                                color: Palette.muted; font-size: 10px;
+                                horizontal-alignment: right; vertical-alignment: center;
+                            }
+                        }
+
+                        TouchArea {
+                            clicked => {
+                                if root.selected-bar-start == night.bar-start {
+                                    root.selected-bar-start = -1;
+                                } else {
+                                    root.selected-bar-start = night.bar-start;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

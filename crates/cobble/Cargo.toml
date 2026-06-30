@@ -1,0 +1,28 @@
+[package]
+name = "cobble"
+version = "0.1.0"
+edition = "2021"
+description = "GUI for Pebble smartwatch health data and daemon configuration."
+
+[[bin]]
+name = "cobble"
+path = "src/main.rs"
+
+[dependencies]
+slint = { version = "1", default-features = false, features = [
+    "compat-1-2",
+    "backend-winit-wayland",
+    "renderer-software",
+] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+cobble-client = { path = "../cobble-client" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[build-dependencies]
+slint-build = "1"
