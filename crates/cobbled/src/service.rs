@@ -62,7 +62,7 @@ use libpebble_ble::{
 };
 
 use crate::db::HealthDb;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, warn};
 use zbus::{
     interface,
@@ -79,7 +79,7 @@ use crate::notification::app_name_to_category;
 /// instead of a generic `DBusError`.
 #[derive(Debug, zbus::DBusError)]
 #[zbus(prefix = "org.cobble.Daemon")]
-enum DaemonError {
+pub(crate) enum DaemonError {
     NotConnected(String),
     Failed(String),
 }
@@ -305,6 +305,9 @@ struct DaemonState {
 #[derive(Clone)]
 pub struct CobbleDaemon {
     state: Arc<Mutex<DaemonState>>,
+    /// Bumped by reload_config so the supervisor can wait event-driven
+    /// when no address is configured.
+    config_revision: watch::Sender<u64>,
 }
 
 impl CobbleDaemon {
@@ -316,6 +319,7 @@ impl CobbleDaemon {
         event_tx: mpsc::UnboundedSender<DaemonEvent>,
         db: Option<Arc<Mutex<HealthDb>>>,
     ) -> Self {
+        let (config_revision, _) = watch::channel(0);
         Self {
             state: Arc::new(Mutex::new(DaemonState {
                 address,
@@ -335,6 +339,7 @@ impl CobbleDaemon {
                 battery_level: None,
                 music: MusicState::default(),
             })),
+            config_revision,
         }
     }
 
@@ -346,6 +351,12 @@ impl CobbleDaemon {
 
     pub(crate) fn event_tx(&self) -> mpsc::UnboundedSender<DaemonEvent> {
         self.state.lock().unwrap().event_tx.clone()
+    }
+
+    /// Returns a receiver that fires when [`reload_config`] is called.
+    /// Used by the supervisor to wait event-driven when no address is set.
+    pub fn config_changed(&self) -> watch::Receiver<u64> {
+        self.config_revision.subscribe()
     }
 
     fn require_pebble(&self) -> Result<Arc<Pebble>, DaemonError> {
@@ -897,7 +908,7 @@ impl CobbleDaemon {
     /// Re-read the config file from disk and apply changes.
     /// If address or adapter changed, disconnects the current session so the
     /// supervisor reconnects with the new parameters on the next cycle.
-    async fn reload_config(&self) -> Result<(), DaemonError> {
+    pub(crate) async fn reload_config(&self) -> Result<(), DaemonError> {
         let config_path = self.state.lock().unwrap().config_path.clone();
 
         let new_cfg = crate::config::load(&config_path)
@@ -919,6 +930,9 @@ impl CobbleDaemon {
         if let Some(pebble) = pebble_to_disconnect {
             let _ = pebble.disconnect().await;
         }
+
+        // Bump the revision so any waiting supervisor wakes up.
+        let _ = self.config_revision.send_modify(|r| *r += 1);
 
         Ok(())
     }

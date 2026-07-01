@@ -3,9 +3,6 @@ Description=Cobble — Pebble BLE daemon
 Documentation=https://github.com/luigi311/libpebble-ble
 After=bluetooth.target graphical-session.target
 Wants=bluetooth.target
-# Skip the service cleanly when the config file hasn't been created yet; without
-# this, an absent file causes ExecStart to fail, triggering a Restart=on-failure loop.
-ConditionPathExists=%E/cobbled/config.toml
 
 [Service]
 Type=simple

@@ -5,7 +5,7 @@
 //   charts.slint  – health charts/lists
 
 import { Palette } from "theme.slint";
-import { DaySteps, SleepBar, HealthSession, SleepNight } from "types.slint";
+import { DaySteps, SleepBar, HealthSession, SleepNight, WatchDevice } from "types.slint";
 import { Toggle, FormField, InfoRow, SettingsRow, ActionButton, PeriodControl } from "widgets.slint";
 import { StepsChart, SleepChart, SessionList, SleepTimingStrip } from "charts.slint";
 
@@ -45,6 +45,8 @@ export component AppWindow inherits Window {
     in-out property <bool>   cfg-verbose: false;
     in-out property <string> cfg-db;
     in property <string> save-status: "";
+    in property <[WatchDevice]> scan-results;
+    in property <bool> scan-in-progress: false;
 
     // ── Period navigation ──
     in property <string> workout-period-label: "This Week";
@@ -54,6 +56,7 @@ export component AppWindow inherits Window {
 
     // ── Callbacks ──
     callback save-config();
+    callback scan-watches();
     callback refresh-data();
     callback refresh-device();
     // Device actions (Settings ▸ Device Actions)
@@ -325,7 +328,70 @@ export component AppWindow inherits Window {
                         Text { text: "Config"; color: Palette.text; font-size: 17px; font-weight: 700; vertical-alignment: center; }
                     }
 
-                    FormField { label: "Watch Address"; value <=> root.cfg-address; placeholder: "E6:94:0A:D4:D5:DC"; }
+                    // Watch Address: scan button + device list
+                    Text { text: "Watch Address"; color: Palette.muted; font-size: 12px; }
+
+                    // Scan button row
+                    Rectangle {
+                        background: Palette.surface; border-radius: 8px; height: 48px;
+                        HorizontalLayout {
+                            padding: 8px; spacing: 10px;
+                            Rectangle {
+                                width: 80px; border-radius: 6px;
+                                background: root.daemon-running ? Palette.accent : Palette.muted;
+                                opacity: root.daemon-running ? 1.0 : 0.5;
+                                Text {
+                                    text: "Scan";
+                                    color: white;
+                                    font-size: 14px; font-weight: 600;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                }
+                                if root.daemon-running: TouchArea { clicked => { root.scan-watches(); } }
+                            }
+                            Text {
+                                text: !root.daemon-running ? "Daemon offline"
+                                    : root.scan-in-progress ? "Scanning…"
+                                    : (root.scan-results.length == 0 && root.cfg-address != "" ? root.cfg-address
+                                    : root.scan-results.length == 0 ? "Tap Scan to find watches"
+                                    : root.scan-results.length + " device(s) found");
+                                color: !root.daemon-running ? Palette.red
+                                    : root.scan-in-progress ? Palette.orange
+                                    : (root.cfg-address != "" && root.scan-results.length == 0 ? Palette.green : Palette.muted);
+                                font-size: 13px; vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Device list (only visible when scan results exist)
+                    if root.scan-results.length > 0: Rectangle {
+                        background: Palette.surface; border-radius: 10px;
+                        VerticalLayout {
+                            padding: 4px;
+                            for device in root.scan-results: Rectangle {
+                                height: 48px; border-radius: 6px;
+                                HorizontalLayout {
+                                    padding-left: 12px; padding-right: 12px;
+                                    Rectangle {
+                                        width: 14px; height: 14px; border-radius: 7px;
+                                        border-width: 2px;
+                                        border-color: Palette.accent;
+                                        background: device.address == root.cfg-address ? Palette.accent : transparent;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                    Text {
+                                        text: device.name == "" ? "Unknown" : device.name;
+                                        color: Palette.text; font-size: 14px; vertical-alignment: center;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    Text {
+                                        text: device.address;
+                                        color: Palette.muted; font-size: 11px; vertical-alignment: center;
+                                    }
+                                }
+                                TouchArea { clicked => { root.cfg-address = device.address; } }
+                            }
+                        }
+                    }
                     FormField { label: "BLE Adapter"; value <=> root.cfg-adapter; placeholder: "hci0"; }
                     Rectangle {
                         background: Palette.surface; border-radius: 10px; height: 52px;

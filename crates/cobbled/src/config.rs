@@ -6,6 +6,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     /// Watch Bluetooth address, e.g. E6:94:0A:D4:D5:DC
+    #[serde(default)]
     pub address: String,
     /// HCI adapter name
     #[serde(default = "default_adapter")]
@@ -38,8 +39,20 @@ pub fn default_config_path() -> anyhow::Result<PathBuf> {
 }
 
 pub fn load(path: &Path) -> anyhow::Result<Config> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("read config file {}", path.display()))?;
-    toml::from_str(&text)
-        .with_context(|| format!("parse config file {}", path.display()))
+    match std::fs::read_to_string(path) {
+        Ok(text) => toml::from_str(&text)
+            .with_context(|| format!("parse config file {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Return a default config so the daemon can start without a
+            // pre-existing config file. The GUI (or manual editing) can
+            // supply a watch address later; reload_config will pick it up.
+            Ok(Config {
+                address: String::new(),
+                adapter: default_adapter(),
+                verbose: false,
+                db: None,
+            })
+        }
+        Err(e) => Err(e).with_context(|| format!("read config file {}", path.display())),
+    }
 }

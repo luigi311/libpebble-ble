@@ -269,6 +269,51 @@ fn main() -> anyhow::Result<()> {
         });
     }
 
+    // ── Scan for Pebble watches ─────────────────────────────────────────────
+    {
+        let weak = window.as_weak();
+        let rt_handle = rt.handle().clone();
+        window.on_scan_watches(move || {
+            let weak_for_scan = weak.clone();
+            let weak_for_ui = weak.clone();
+            let rt = rt_handle.clone();
+            // Show scanning state immediately on the UI thread.
+            slint::invoke_from_event_loop(move || {
+                if let Some(w) = weak_for_ui.upgrade() {
+                    w.set_scan_in_progress(true);
+                }
+            }).ok();
+            rt.spawn(async move {
+                let results = match CobbleClient::new().await {
+                    Err(e) => {
+                        warn!("Scan: {e}");
+                        Vec::new()
+                    }
+                    Ok(client) => match client.scan(5.0).await {
+                        Err(e) => {
+                            warn!("Scan: {e}");
+                            Vec::new()
+                        }
+                        Ok(results) => results,
+                    },
+                };
+                slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak_for_scan.upgrade() {
+                        let model: VecModel<WatchDevice> = VecModel::default();
+                        for (addr, name) in results {
+                            model.push(WatchDevice {
+                                address: addr.into(),
+                                name: name.into(),
+                            });
+                        }
+                        w.set_scan_results(ModelRc::new(model));
+                        w.set_scan_in_progress(false);
+                    }
+                }).ok();
+            });
+        });
+    }
+
     // ── Device: manual refresh ───────────────────────────────────────────────
     {
         let weak = window.as_weak();

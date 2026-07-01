@@ -23,6 +23,23 @@ pub async fn run_supervisor(daemon: CobbleDaemon) {
 
     while !daemon.is_stopping() {
         let (address, adapter) = daemon.current_connection_params();
+
+        // If no watch address is configured yet (e.g. fresh install or first
+        // run before the GUI has scanned and saved one), wait event-driven.
+        // reload_config bumps a revision counter that we .await here — zero
+        // wakeups, zero battery impact.
+        if address.is_empty() {
+            debug!("no watch address configured; waiting for config update ...");
+            let mut rx = daemon.config_changed();
+            // Re-check under lock to avoid a race: reload_config could have
+            // run between the initial check and subscribe().
+            let (addr, _) = daemon.current_connection_params();
+            if addr.is_empty() {
+                let _ = rx.changed().await;
+            }
+            continue;
+        }
+
         info!("connecting to watch {address} ...");
         let pebble = Arc::new(Pebble::new(&address, &adapter));
 

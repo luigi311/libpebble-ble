@@ -15,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 
 mod codec;
 mod config;
+mod config_watcher;
 mod db;
 mod notification;
 mod notify_monitor;
@@ -98,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-    let daemon = CobbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), config_path, event_tx, health_db.clone());
+    let daemon = CobbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), config_path.clone(), event_tx, health_db.clone());
 
     // Build the session D-Bus connection.
     let conn = zbus::connection::Builder::session()?
@@ -131,6 +132,10 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         run_supervisor(daemon_for_super).await;
     });
+
+    // Watch the config file for external changes (manual edits, GUI saves)
+    // and auto-reload whenever it is written.
+    config_watcher::watch_config(config_path.clone(), daemon.clone());
 
     // Run until SIGINT or SIGTERM.
     let mut sigterm = signal::unix::signal(SignalKind::terminate())?;

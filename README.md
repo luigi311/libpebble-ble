@@ -85,17 +85,19 @@ A daemon can be alive while the watch is out of range; apps need to check both.
 
 ## Quick start
 
-Create the config file first (required — the daemon will not start without it).
+The config file is optional — the daemon starts with defaults if it doesn't exist.
 The path follows the XDG Base Directory spec: `$XDG_CONFIG_HOME/cobbled/config.toml`,
 which defaults to `~/.config/cobbled/config.toml` when `XDG_CONFIG_HOME` is not set.
+
+You can create it with just the watch address (everything else has sane defaults):
 
 ```sh
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/cobbled"
 cat > "${XDG_CONFIG_HOME:-$HOME/.config}/cobbled/config.toml" << 'EOF'
-address = "E6:94:0A:D4:D5:DC"   # your watch Bluetooth address
-# adapter = "hci0"               # optional, default is hci0
-# verbose = false                 # optional, or use -v at runtime
-# db = "/custom/path/health.db"  # optional, default is XDG_DATA_HOME/cobbled/health.db
+# address = "E6:94:0A:D4:D5:DC"   # your watch Bluetooth address
+# adapter = "hci0"                # optional, default is hci0
+# verbose = false                  # optional, or use -v at runtime
+# db = "/custom/path/health.db"   # optional, default is XDG_DATA_HOME/cobbled/health.db
 EOF
 ```
 
@@ -161,14 +163,16 @@ sudo apt install ./cobbled_*_*.deb
 
 ### Configure the daemon
 
-Create `$XDG_CONFIG_HOME/cobbled/config.toml` before enabling the service
-(defaults to `~/.config/cobbled/config.toml` when `XDG_CONFIG_HOME` is not
-set). The systemd unit checks for this file and will not start (or enter a
-restart loop) if it is absent.
+Create `$XDG_CONFIG_HOME/cobbled/config.toml` (defaults to
+`~/.config/cobbled/config.toml` when `XDG_CONFIG_HOME` is not set).
+The daemon starts without it — it will wait for a config change or
+D-Bus `ReloadConfig` before attempting a watch connection.
+
+The GUI (`cobble`) can scan for Pebble devices and write the config for you.
 
 ```toml
 # $XDG_CONFIG_HOME/cobbled/config.toml
-address = "E6:94:0A:D4:D5:DC"   # required — your watch Bluetooth address
+# address = "E6:94:0A:D4:D5:DC"   # your watch Bluetooth address (optional — daemon starts without it)
 # adapter = "hci0"               # optional, default hci0
 # verbose = false                 # optional
 # db = "/custom/path/health.db"  # optional, default XDG_DATA_HOME/cobbled/health.db
@@ -226,7 +230,7 @@ Object path: `/org/cobble/Daemon` — session bus.
 | Method | `Forget` | `()` | remove the Bluetooth bond (unpair); re-pairs on next reconnect |
 | Method | `ReprocessHealthData` | `()` | rebuild derived health tables from raw blobs |
 | Method | `PushWeather` | `(ay, s, s, n, y, n, n, y, n, n, b)` | location\_key (16 bytes), location\_name, forecast\_short, current\_temp\_c, current\_weather, today\_high\_c, today\_low\_c, tomorrow\_weather, tomorrow\_high\_c, tomorrow\_low\_c, is\_current\_location. Weather types: 0=PartlyCloudy 1=CloudyDay 2=LightSnow 3=LightRain 4=HeavyRain 5=HeavySnow 6=Generic 7=Sun 8=RainAndSnow |
-| Method | `ReloadConfig` | `()` | re-read config; disconnects if address/adapter changed |
+| Method | `ReloadConfig` | `()` | re-read config; disconnects if address/adapter changed. Also called automatically by the filesystem watcher. |
 | Signal | `AppMessageReceived` | `(s, a{i(sv)})` | uuid, data |
 | Signal | `AckReceived` | `(u)` | txn |
 | Signal | `NackReceived` | `(u)` | txn |
