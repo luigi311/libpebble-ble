@@ -1,4 +1,4 @@
-//! Phone call control (endpoint 35).
+//! Phone call control (endpoint 33).
 //!
 //! Phone → Watch commands (builders):
 //!   IncomingCall  (0x04)  — show incoming call screen

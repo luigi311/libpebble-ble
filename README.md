@@ -228,6 +228,10 @@ Object path: `/org/cobble/Daemon` — session bus.
 | Method | `CreateCoreDump` | `()` | trigger a watch core dump |
 | Method | `FactoryReset` | `(b)` | DESTRUCTIVE — wipe + unpair; requires `confirm = true` |
 | Method | `Forget` | `()` | remove the Bluetooth bond (unpair); re-pairs on next reconnect |
+| Method | `PushIncomingCall` | `(u, s, s)` | cookie, caller_number, caller_name — show incoming call screen on watch |
+| Method | `PushMissedCall` | `(u, s, s)` | cookie, caller_number, caller_name — missed call notification |
+| Method | `PushCallStart` | `(u)` | cookie — transition watch to in-call screen |
+| Method | `PushCallEnd` | `(u)` | cookie — end call on watch |
 | Method | `ReprocessHealthData` | `()` | rebuild derived health tables from raw blobs |
 | Method | `PushWeather` | `(ay, s, s, n, y, n, n, y, n, n, b)` | location\_key (16 bytes), location\_name, forecast\_short, current\_temp\_c, current\_weather, today\_high\_c, today\_low\_c, tomorrow\_weather, tomorrow\_high\_c, tomorrow\_low\_c, is\_current\_location. Weather types: 0=PartlyCloudy 1=CloudyDay 2=LightSnow 3=LightRain 4=HeavyRain 5=HeavySnow 6=Generic 7=Sun 8=RainAndSnow |
 | Method | `ReloadConfig` | `()` | re-read config; disconnects if address/adapter changed. Also called automatically by the filesystem watcher. |
@@ -241,6 +245,7 @@ Object path: `/org/cobble/Daemon` — session bus.
 | Signal | `BatteryChanged` | `(n)` | watch battery percentage (-1 = unknown) |
 | Signal | `AppRunStateChanged` | `(s, b)` | app uuid, running — emitted when an app opens/closes on the watch |
 | Signal | `MusicActionReceived` | `(s)` | media-control action from the watch (play, pause, play\_pause, next\_track, previous\_track, volume\_up, volume\_down, get\_current\_track) |
+| Signal | `PhoneActionReceived` | `(s, u)` | action (answer/hangup), cookie — emitted when watch sends phone action |
 
 AppMessage values cross D-Bus as `(tag, variant)` pairs where tag is one of
 `u8 u16 u32 i8 i16 i32 uint int str bytes`. The Python client handles all
@@ -263,9 +268,9 @@ consume raw records without reading the database directly.
   - [x] Send
   - [ ] Actions
   - [x] Categorization (Text/Call/Other)
-- [ ] Phone calls
-  - [ ] Actions
-- [x] Weather
+- [x] Phone calls
+  - [x] Actions
+- [x] Weather (Open-Meteo auto-fetch, GeoClue2/ipapi.co location, 3h refresh, connection-gated)
 - [x] Health
   - [x] Steps
   - [x] Sleep
@@ -290,14 +295,14 @@ consume raw records without reading the database directly.
   - [x] Forwarding
   - [ ] Actions (Dismiss)
   - [x] Categorizations
-- [ ] Phonecalls
-  - [ ] Actions
+- [x] Phonecalls (ModemManager / oFono bridge, incoming call → watch + watch answer/hangup → modem)
+  - [x] Actions
 - [x] AppMessages
   - [x] External applications
 - [x] Health (data sync + profile/settings read)
 - [x] Watch info + device management (version, color, battery, screenshot, reboot/reset/forget)
-- [x] Music push (SetMusicPlayerInfo / SetMusicTrack / SetMusicPlaybackState / SetMusicVolume; replays now-playing on the watch's GetCurrentTrack; surfaces watch control actions and acts on them)
-- [x] Weather
+- [x] Music push + MPRIS auto-discovery (desktop players → watch metadata + watch controls → desktop player, system volume via pactl/wpctl)
+- [x] Weather (Open-Meteo auto-fetch, GeoClue2/ipapi.co location, 3h refresh, connection-gated)
 
 Every libpebble-ble capability is exposed over D-Bus and supported by the
 Python client — see the [D-Bus interface](#d-bus-interface-orgcobbledaemon) table.
