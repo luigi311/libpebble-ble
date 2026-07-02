@@ -91,6 +91,14 @@ impl MprisMonitor {
     /// Forward a media-control action from the watch to the active MPRIS player.
     pub async fn handle_action(&self, action: &str) {
         trace!("mpris: handle_action {action}");
+
+        // Volume controls the system sink — no active player needed.
+        match action {
+            "volume_up" => { adjust_system_volume(5).await; return; }
+            "volume_down" => { adjust_system_volume(-5).await; return; }
+            _ => {}
+        }
+
         let player = { self.active.lock().await.clone() };
         let Some(player) = player else {
             debug!("mpris: no active player to handle action {action}");
@@ -106,17 +114,13 @@ impl MprisMonitor {
             "play_pause" => call_method(&self.conn, bus, path, iface, "PlayPause").await,
             "next_track" => call_method(&self.conn, bus, path, iface, "Next").await,
             "previous_track" => call_method(&self.conn, bus, path, iface, "Previous").await,
-            "volume_up" => {
-                adjust_system_volume(5).await;
-            }
-            "volume_down" => {
-                adjust_system_volume(-5).await;
-            }
             "get_current_track" => {
                 if let Some(state) = self.read_player_state(bus).await {
                     self.push_to_watch(&state).await;
                 }
             }
+            // volume_up/volume_down handled above.
+            "volume_up" | "volume_down" => unreachable!(),
             other => debug!("mpris: unhandled action '{other}'"),
         }
     }
@@ -171,15 +175,23 @@ impl MprisMonitor {
             Some(s) => s,
             None => return,
         };
-        {
+        let is_active = {
             let mut active = self.active.lock().await;
             match active.as_ref() {
-                Some(current) if state.playing && !current.playing => *active = Some(state.clone()),
-                None => *active = Some(state.clone()),
-                _ => {}
+                Some(current) if state.playing && !current.playing => {
+                    *active = Some(state.clone());
+                    true
+                }
+                None => {
+                    *active = Some(state.clone());
+                    true
+                }
+                _ => active.as_ref().map(|a| a.bus_name.as_str()) == Some(bus_name.as_str()),
             }
+        };
+        if is_active {
+            self.push_to_watch(&state).await;
         }
-        self.push_to_watch(&state).await;
 
         let self2 = Arc::clone(self);
         tokio::spawn(async move {
@@ -201,17 +213,19 @@ impl MprisMonitor {
         let artist = owned_str(meta.get("xesam:artist"));
         let album = owned_str(meta.get("xesam:album"));
         let title = owned_str(meta.get("xesam:title"));
-        let length_us: i64 = meta.get("mpris:length").and_then(|v| v.downcast_ref::<i64>().ok()).unwrap_or(0);
+        let length_us: i64 = meta.get("mpris:length").and_then(|v| v.downcast_ref::<i64>().ok()).unwrap_or(0).max(0);
         let track_length_ms = (length_us / 1000).min(u32::MAX as i64) as u32;
-        let track_number: u32 = meta.get("xesam:trackNumber").and_then(|v| v.downcast_ref::<i32>().ok()).unwrap_or(0) as u32;
+        let track_number: i32 = meta.get("xesam:trackNumber").and_then(|v| v.downcast_ref::<i32>().ok()).unwrap_or(0);
+        let track_number = track_number.max(0) as u32;
 
         if !artist.is_empty() || !title.is_empty() {
             let _ = self.daemon.set_music_track(artist, album, title, track_length_ms, 0, track_number).await;
         }
 
         let status: String = self.get_prop(&state.bus_name, "org.mpris.MediaPlayer2.Player", "PlaybackStatus").await.unwrap_or_default();
-        let play_state = match status.as_str() { "Playing" => 1u8, "Paused" => 2u8, _ => 0u8 };
-        let position_us: i64 = self.get_prop(&state.bus_name, "org.mpris.MediaPlayer2.Player", "Position").await.unwrap_or(0);
+        // Daemon contract: 0=paused 1=playing 2=rewinding 3=ffwd 4=unknown
+        let play_state = match status.as_str() { "Playing" => 1u8, "Paused" => 0u8, _ => 4u8 };
+        let position_us: i64 = self.get_prop(&state.bus_name, "org.mpris.MediaPlayer2.Player", "Position").await.unwrap_or(0).max(0);
         let position_ms = (position_us / 1000).min(u32::MAX as i64) as u32;
         let rate: f64 = self.get_prop(&state.bus_name, "org.mpris.MediaPlayer2.Player", "Rate").await.unwrap_or(1.0);
         let shuffle: bool = self.get_prop(&state.bus_name, "org.mpris.MediaPlayer2.Player", "Shuffle").await.unwrap_or(false);
@@ -241,11 +255,17 @@ impl MprisMonitor {
     }
 
     async fn listen_properties_changed(&self, bus_name: &str) -> zbus::Result<()> {
+        // Resolve well-known name → unique name so we can verify the sender.
+        let unique = match resolve_name(&self.conn, bus_name).await {
+            Some(u) => u,
+            None => return Ok(()),
+        };
+
         let rule = format!(
             "type='signal',sender='{bus_name}',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/org/mpris/MediaPlayer2'"
         );
         add_match(&self.conn, &rule).await?;
-        debug!("mpris: listening for PropertiesChanged from {bus_name}");
+        debug!("mpris: listening for PropertiesChanged from {bus_name} ({unique})");
         let mut stream = MessageStream::from(&self.conn);
         while let Some(msg) = stream.next().await {
             let msg = match msg { Ok(m) => m, Err(_) => continue };
@@ -253,25 +273,36 @@ impl MprisMonitor {
             if hdr.interface().map(|i| i.as_str()) != Some("org.freedesktop.DBus.Properties") { continue; }
             if hdr.member().map(|m| m.as_str()) != Some("PropertiesChanged") { continue; }
             if hdr.path().map(|p| p.as_str()) != Some("/org/mpris/MediaPlayer2") { continue; }
-            // The AddMatch rule already filters by sender; don't double-check
-            // here because hdr.sender() is the unique name (:1.42) while
-            // bus_name is the well-known name.
+            // Verify the sender against the resolved unique name so we don't
+            // process another player's signals in this listener.
+            if hdr.sender().map(|s| s.as_str()) != Some(&unique) { continue; }
 
             debug!("mpris: PropertiesChanged from {bus_name}");
             if let Some(state) = self.read_player_state(bus_name).await {
-                {
+                let is_active = {
                     let mut active = self.active.lock().await;
                     if state.playing {
                         match active.as_ref() {
-                            Some(current) if current.bus_name != state.bus_name => *active = Some(state.clone()),
-                            None => *active = Some(state.clone()),
-                            _ => {}
+                            Some(current) if current.bus_name != state.bus_name => {
+                                *active = Some(state.clone());
+                                true
+                            }
+                            None => {
+                                *active = Some(state.clone());
+                                true
+                            }
+                            _ => active.as_ref().map(|a| a.bus_name.as_str()) == Some(bus_name),
                         }
-                    } else if active.as_ref().map(|a| a.bus_name.as_str()) == Some(bus_name) {
-                        active.as_mut().unwrap().playing = false;
+                    } else {
+                        if active.as_ref().map(|a| a.bus_name.as_str()) == Some(bus_name) {
+                            active.as_mut().unwrap().playing = false;
+                        }
+                        active.as_ref().map(|a| a.bus_name.as_str()) == Some(bus_name)
                     }
+                };
+                if is_active {
+                    self.push_to_watch(&state).await;
                 }
-                self.push_to_watch(&state).await;
             }
         }
         Ok(())
@@ -281,6 +312,21 @@ impl MprisMonitor {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Resolve a well-known bus name to its unique name.
+async fn resolve_name(conn: &Connection, well_known: &str) -> Option<String> {
+    let reply = conn
+        .call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "GetNameOwner",
+            &(well_known,),
+        )
+        .await
+        .ok()?;
+    reply.body().deserialize::<String>().ok()
+}
 
 async fn add_match(conn: &Connection, rule: &str) -> zbus::Result<()> {
     conn.call_method(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", Some("org.freedesktop.DBus"), "AddMatch", &(rule,)).await.map(|_| ())
