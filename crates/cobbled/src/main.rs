@@ -17,11 +17,14 @@ mod codec;
 mod config;
 mod config_watcher;
 mod db;
+mod http;
+mod location;
 mod mpris_monitor;
 mod notification;
 mod notify_monitor;
 mod service;
 mod supervisor;
+mod weather;
 
 use db::HealthDb;
 use notify_monitor::NotificationMonitor;
@@ -164,6 +167,14 @@ async fn main() -> anyhow::Result<()> {
                 }
             });
             monitor.run().await;
+        });
+    }
+
+    // Start the weather provider: GeoClue2 location → Open-Meteo → watch.
+    {
+        let daemon4 = daemon.clone();
+        tokio::spawn(async move {
+            weather::run_weather(daemon4).await;
         });
     }
 

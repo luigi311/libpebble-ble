@@ -308,6 +308,8 @@ pub struct CobbleDaemon {
     /// Bumped by reload_config so the supervisor can wait event-driven
     /// when no address is configured.
     config_revision: watch::Sender<u64>,
+    /// Notifies subscribers when the watch connects or disconnects.
+    connection_tx: watch::Sender<bool>,
     /// Forwards watch music-control actions to the MPRIS monitor.
     music_action_tx: mpsc::UnboundedSender<String>,
 }
@@ -323,6 +325,7 @@ impl CobbleDaemon {
         music_action_tx: mpsc::UnboundedSender<String>,
     ) -> Self {
         let (config_revision, _) = watch::channel(0);
+        let (connection_tx, _) = watch::channel(false);
         Self {
             state: Arc::new(Mutex::new(DaemonState {
                 address,
@@ -344,6 +347,7 @@ impl CobbleDaemon {
             })),
             config_revision,
             music_action_tx,
+            connection_tx,
         }
     }
 
@@ -363,13 +367,18 @@ impl CobbleDaemon {
         self.config_revision.subscribe()
     }
 
+    /// Returns a receiver that fires when the watch connects or disconnects.
+    pub fn watch_connection(&self) -> watch::Receiver<bool> {
+        self.connection_tx.subscribe()
+    }
+
     /// Returns a clone of the music-action sender; used by the signal
     /// emitter to forward watch control actions to the MPRIS monitor.
     pub(crate) fn music_action_tx(&self) -> mpsc::UnboundedSender<String> {
         self.music_action_tx.clone()
     }
 
-    fn require_pebble(&self) -> Result<Arc<Pebble>, DaemonError> {
+    pub(crate) fn require_pebble(&self) -> Result<Arc<Pebble>, DaemonError> {
         let state = self.state.lock().unwrap();
         if !state.connected {
             return Err(DaemonError::NotConnected("watch is not connected".into()));
@@ -383,6 +392,7 @@ impl CobbleDaemon {
         state.pebble = Some(pebble);
         state.connected = true;
         let _ = state.event_tx.send(DaemonEvent::ConnectionChanged(true));
+        self.connection_tx.send_replace(true);
     }
 
     /// Cache the demographic health profile synced from the watch and return the
@@ -523,6 +533,7 @@ impl CobbleDaemon {
         state.battery_level = None;
         state.music = MusicState::default();
         let _ = state.event_tx.send(DaemonEvent::ConnectionChanged(false));
+        self.connection_tx.send_replace(false);
     }
 
     pub fn is_stopping(&self) -> bool {
@@ -863,7 +874,7 @@ impl CobbleDaemon {
     ///
     /// `current_weather` / `tomorrow_weather`: 0=PartlyCloudy, 1=CloudyDay, 2=LightSnow,
     ///   3=LightRain, 4=HeavyRain, 5=HeavySnow, 6=Generic, 7=Sun, 8=RainAndSnow, 255=Unknown
-    async fn push_weather(
+    pub(crate) async fn push_weather(
         &self,
         location_key: Vec<u8>,
         location_name: String,
