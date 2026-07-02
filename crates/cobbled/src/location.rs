@@ -108,12 +108,12 @@ async fn try_ip_geolocation(db: Option<Arc<Mutex<AppDb>>>) -> anyhow::Result<(f6
     };
 
     // 2. Check the database cache.
-    if let Some(ref db) = db {
-        if let Some(loc) = db.lock().unwrap().lookup_ip_location(&ip) {
-            let name = location_name(&loc.city);
-            info!("weather: cached IP location ({name})");
-            return Ok((loc.latitude, loc.longitude, name));
-        }
+    if let Some(ref db) = db
+        && let Some(loc) = db.lock().unwrap().lookup_ip_location(&ip)
+    {
+        let name = location_name(&loc.city);
+        info!("weather: cached IP location ({name})");
+        return Ok((loc.latitude, loc.longitude, name));
     }
 
     // 3. Not cached — fetch from ipapi.co.

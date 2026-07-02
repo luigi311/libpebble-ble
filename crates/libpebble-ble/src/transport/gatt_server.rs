@@ -330,10 +330,10 @@ fn send_raw(
     packet: Vec<u8>,
     notify_tx: &mut Option<mpsc::UnboundedSender<Vec<u8>>>,
 ) {
-    if let Some(tx) = notify_tx {
-        if tx.send(packet).is_err() {
-            warn!("PPoGATT notify channel closed (link down)");
-            *notify_tx = None;
-        }
+    if let Some(tx) = notify_tx
+        && tx.send(packet).is_err()
+    {
+        warn!("PPoGATT notify channel closed (link down)");
+        *notify_tx = None;
     }
 }

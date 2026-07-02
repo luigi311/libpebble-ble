@@ -45,13 +45,13 @@ impl Pebble {
 
         let _ = tokio::time::timeout(Duration::from_secs_f64(timeout_secs), async {
             while let Some(event) = stream.next().await {
-                if let AdapterEvent::DeviceAdded(addr) = event {
-                    if let Ok(device) = adapter.device(addr) {
-                        let name = device.name().await.ok().flatten().unwrap_or_default();
-                        if name.to_lowercase().contains("pebble") {
-                            debug!("found Pebble: {addr} \"{name}\"");
-                            found.push((addr.to_string(), name));
-                        }
+                if let AdapterEvent::DeviceAdded(addr) = event
+                    && let Ok(device) = adapter.device(addr)
+                {
+                    let name = device.name().await.ok().flatten().unwrap_or_default();
+                    if name.to_lowercase().contains("pebble") {
+                        debug!("found Pebble: {addr} \"{name}\"");
+                        found.push((addr.to_string(), name));
                     }
                 }
             }
@@ -365,17 +365,16 @@ impl Pebble {
             }
         }
 
-        if let Some(c) = dispatch::find_char(device, MTU_CHARACTERISTIC).await {
-            if let Ok(data) = c.read().await {
-                if data.len() >= 2 {
-                    let watch_mtu = u16::from_le_bytes([data[0], data[1]]) as usize;
-                    debug!("watch requested MTU: {watch_mtu}");
-                    if let Some(srv) = &self.inner.lock().unwrap().gatt_server {
-                        if watch_mtu >= 23 {
-                            srv.set_mtu(watch_mtu);
-                        }
-                    }
-                }
+        if let Some(c) = dispatch::find_char(device, MTU_CHARACTERISTIC).await
+            && let Ok(data) = c.read().await
+            && data.len() >= 2
+        {
+            let watch_mtu = u16::from_le_bytes([data[0], data[1]]) as usize;
+            debug!("watch requested MTU: {watch_mtu}");
+            if let Some(srv) = &self.inner.lock().unwrap().gatt_server
+                && watch_mtu >= 23
+            {
+                srv.set_mtu(watch_mtu);
             }
         }
     }

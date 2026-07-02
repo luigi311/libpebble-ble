@@ -71,11 +71,11 @@ impl MprisMonitor {
                     *active = None;
                     if let Ok(players) = self.list_players().await {
                         for p in players {
-                            if p != name {
-                                if let Some(s) = self.read_player_state(&p).await {
-                                    *active = Some(s);
-                                    break;
-                                }
+                            if p != name
+                                && let Some(s) = self.read_player_state(&p).await
+                            {
+                                *active = Some(s);
+                                break;
                             }
                         }
                     }

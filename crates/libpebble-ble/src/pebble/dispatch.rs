@@ -47,10 +47,10 @@ pub(crate) fn on_pebble_message(message: Vec<u8>, inner: &Arc<Mutex<PebbleInner>
 
     match Endpoint::from_u16(endpoint_raw) {
         Some(Endpoint::PhoneVersion) => {
-            if let Some(reply) = pebble_pack(Endpoint::PhoneVersion, &build_phone_version_response()) {
-                if let Some(srv) = &inner.lock().unwrap().gatt_server {
-                    srv.send(reply);
-                }
+            if let Some(reply) = pebble_pack(Endpoint::PhoneVersion, &build_phone_version_response())
+                && let Some(srv) = &inner.lock().unwrap().gatt_server
+            {
+                srv.send(reply);
             }
             debug!("watch requested phone version; replied");
         }
@@ -91,10 +91,10 @@ pub(crate) fn on_pebble_message(message: Vec<u8>, inner: &Arc<Mutex<PebbleInner>
         Some(Endpoint::Ping) => {
             if let Some(cookie) = parse_ping(payload) {
                 debug!("ping cookie={cookie}; replying pong");
-                if let Some(reply) = pebble_pack(Endpoint::Ping, &build_pong(cookie)) {
-                    if let Some(srv) = &inner.lock().unwrap().gatt_server {
-                        srv.send(reply);
-                    }
+                if let Some(reply) = pebble_pack(Endpoint::Ping, &build_pong(cookie))
+                    && let Some(srv) = &inner.lock().unwrap().gatt_server
+                {
+                    srv.send(reply);
                 }
             }
         }
@@ -216,10 +216,10 @@ fn on_datalog_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
             );
             inner.lock().unwrap().datalog_sessions.insert(handle, session);
             let ack = pebble_pack(Endpoint::DataLog, &build_reply(handle, true));
-            if let Some(pkt) = ack {
-                if let Some(srv) = &inner.lock().unwrap().gatt_server {
-                    srv.send(pkt);
-                }
+            if let Some(pkt) = ack
+                && let Some(srv) = &inner.lock().unwrap().gatt_server
+            {
+                srv.send(pkt);
             }
         }
         DATALOG_SENDDATA => {
@@ -247,10 +247,10 @@ fn on_datalog_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
                     batch.data.len()
                 );
                 let ack = pebble_pack(Endpoint::DataLog, &build_reply(handle, true));
-                if let Some(pkt) = ack {
-                    if let Some(srv) = &inner.lock().unwrap().gatt_server {
-                        srv.send(pkt);
-                    }
+                if let Some(pkt) = ack
+                    && let Some(srv) = &inner.lock().unwrap().gatt_server
+                {
+                    srv.send(pkt);
                 }
                 let handlers: Vec<_> = inner.lock().unwrap().health_handlers.clone();
                 for h in handlers {
@@ -259,10 +259,10 @@ fn on_datalog_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
             } else {
                 warn!("DataLog SENDDATA for unknown session handle={handle}; sending NACK");
                 let nack = pebble_pack(Endpoint::DataLog, &build_reply(handle, false));
-                if let Some(pkt) = nack {
-                    if let Some(srv) = &inner.lock().unwrap().gatt_server {
-                        srv.send(pkt);
-                    }
+                if let Some(pkt) = nack
+                    && let Some(srv) = &inner.lock().unwrap().gatt_server
+                {
+                    srv.send(pkt);
                 }
             }
         }
@@ -270,10 +270,10 @@ fn on_datalog_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
             debug!("DataLog CLOSE handle={handle}");
             inner.lock().unwrap().datalog_sessions.remove(&handle);
             let ack = pebble_pack(Endpoint::DataLog, &build_reply(handle, true));
-            if let Some(pkt) = ack {
-                if let Some(srv) = &inner.lock().unwrap().gatt_server {
-                    srv.send(pkt);
-                }
+            if let Some(pkt) = ack
+                && let Some(srv) = &inner.lock().unwrap().gatt_server
+            {
+                srv.send(pkt);
             }
         }
         DATALOG_TIMEOUT => {
@@ -290,12 +290,12 @@ fn resolve_pending(txn: u8, acked: bool, inner: &Arc<Mutex<PebbleInner>>) {
     let mut guard = inner.lock().unwrap();
     if let Some(sender) = guard.pending.remove(&txn) {
         let _ = sender.send(acked);
-    } else if !guard.pending.is_empty() {
-        if let Some(oldest) = guard.pending.keys().copied().next() {
-            debug!("ACK txn={txn} had no match; resolving oldest pending txn={oldest}");
-            if let Some(sender) = guard.pending.remove(&oldest) {
-                let _ = sender.send(acked);
-            }
+    } else if !guard.pending.is_empty()
+        && let Some(oldest) = guard.pending.keys().copied().next()
+    {
+        debug!("ACK txn={txn} had no match; resolving oldest pending txn={oldest}");
+        if let Some(sender) = guard.pending.remove(&oldest) {
+            let _ = sender.send(acked);
         }
     }
 }
@@ -433,10 +433,10 @@ fn on_blobdb2_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
 }
 
 fn blobdb2_send(inner: &Arc<Mutex<PebbleInner>>, payload: Vec<u8>) {
-    if let Some(pkt) = pebble_pack(Endpoint::BlobDbV2, &payload) {
-        if let Some(srv) = &inner.lock().unwrap().gatt_server {
-            srv.send(pkt);
-        }
+    if let Some(pkt) = pebble_pack(Endpoint::BlobDbV2, &payload)
+        && let Some(srv) = &inner.lock().unwrap().gatt_server
+    {
+        srv.send(pkt);
     }
 }
 

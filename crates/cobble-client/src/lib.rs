@@ -536,13 +536,14 @@ impl CobbleClient {
             let connected = proxy.connected().await.unwrap_or(false);
             on_event(StatusEvent::Connected(connected));
             on_event(StatusEvent::Battery(proxy.battery_level().await.unwrap_or(-1)));
-            if connected {
-                if let Ok(info) = self.get_watch_info().await {
-                    on_event(StatusEvent::WatchInfo(info));
-                }
+            if connected
+                && let Ok(info) = self.get_watch_info().await
+            {
+                on_event(StatusEvent::WatchInfo(info));
             }
         }
 
+        // Watch signals (events stream)
         // Merge the daemon-owner, connection, and battery signals into one stream.
         let owner = proxy
             .inner()
@@ -570,10 +571,10 @@ impl CobbleClient {
                     let connected = proxy.connected().await.unwrap_or(false);
                     on_event(StatusEvent::Connected(connected));
                     on_event(StatusEvent::Battery(proxy.battery_level().await.unwrap_or(-1)));
-                    if connected {
-                        if let Ok(info) = self.get_watch_info().await {
-                            on_event(StatusEvent::WatchInfo(info));
-                        }
+                    if connected
+                        && let Ok(info) = self.get_watch_info().await
+                    {
+                        on_event(StatusEvent::WatchInfo(info));
                     }
                 }
                 StatusEvent::DaemonRunning(false) => {

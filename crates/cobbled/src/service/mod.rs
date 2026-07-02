@@ -999,12 +999,12 @@ pub async fn run_signal_emitter(
                 if c {
                     // The connect-time battery read can be queued before this
                     // event and dropped by the disconnected gate; deliver it now.
-                    if let Some(level) = daemon.session_battery_level() {
-                        if daemon.set_battery_level(level) {
-                            let _ =
-                                iface.get().await.battery_level_changed(iface.signal_emitter()).await;
-                            let _ = CobbleDaemon::battery_changed(emitter, i16::from(level)).await;
-                        }
+                    if let Some(level) = daemon.session_battery_level()
+                        && daemon.set_battery_level(level)
+                    {
+                        let _ =
+                            iface.get().await.battery_level_changed(iface.signal_emitter()).await;
+                        let _ = CobbleDaemon::battery_changed(emitter, i16::from(level)).await;
                     }
                 } else {
                     // Battery is unknown while disconnected (state was cleared).
