@@ -11,6 +11,7 @@ pub mod blob_db;
 pub mod datalog;
 pub mod health;
 pub mod music;
+pub mod phone_control;
 pub mod phone_version;
 pub mod ping;
 pub mod reset;
@@ -21,6 +22,7 @@ pub mod watch_pref;
 
 pub use app_message::AppMessageValue;
 pub use app_run_state::AppRunStateCmd;
+pub use phone_control::PhoneAction;
 
 use uuid::Uuid;
 
@@ -32,6 +34,7 @@ pub enum Endpoint {
     PhoneVersion = 17,
     SystemMessage = 18,
     MusicControl = 32,
+    PhoneControl = 33,
     AppMessage = 48,
     AppRunState = 52,
     /// Health sync trigger — phone sends request, watch replies with ACK then
@@ -58,6 +61,7 @@ impl Endpoint {
             17 => Some(Self::PhoneVersion),
             18 => Some(Self::SystemMessage),
             32 => Some(Self::MusicControl),
+            33 => Some(Self::PhoneControl),
             48 => Some(Self::AppMessage),
             52 => Some(Self::AppRunState),
             911 => Some(Self::HealthSync),

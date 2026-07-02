@@ -52,6 +52,8 @@ use crate::{
             MusicRepeat, MusicShuffle,
         },
         phone_version::build_phone_version_response,
+        phone_control::{parse_phone_action, PhoneAction,
+            build_incoming_call, build_missed_call, build_call_start, build_call_end},
         ping::{build_pong, parse_ping},
         reset::{build_reset, ResetCommand},
         screenshot::{
@@ -92,6 +94,8 @@ pub type BatteryHandler = Arc<dyn Fn(u8) + Send + Sync + 'static>;
 pub type AppRunStateHandler = Arc<dyn Fn(String, bool) + Send + Sync + 'static>;
 /// Handler called with a media-control action the watch sent (play/pause/next/…).
 pub type MusicActionHandler = Arc<dyn Fn(MusicAction) + Send + Sync + 'static>;
+/// Handler called when the watch sends a phone control action (answer/hangup).
+pub type PhoneActionHandler = Arc<dyn Fn(PhoneAction) + Send + Sync + 'static>;
 
 /// A decoded watch screenshot: RGBA8888 pixels, row-major (`width*height*4` bytes).
 #[derive(Debug, Clone)]
@@ -133,6 +137,7 @@ struct PebbleInner {
     battery_level: Option<u8>,
     app_run_state_handlers: Vec<AppRunStateHandler>,
     music_action_handlers: Vec<MusicActionHandler>,
+    phone_action_handlers: Vec<PhoneActionHandler>,
     /// In-flight screenshot reassembly, if a `take_screenshot` is awaiting.
     screenshot: Option<ScreenshotAccumulator>,
     /// Monotonic id assigned to each screenshot request.
@@ -168,6 +173,7 @@ impl PebbleInner {
             battery_level: None,
             app_run_state_handlers: Vec::new(),
             music_action_handlers: Vec::new(),
+            phone_action_handlers: Vec::new(),
             screenshot: None,
             screenshot_seq: 0,
             pending: HashMap::new(),
@@ -275,6 +281,12 @@ impl Pebble {
     /// (play/pause/next/volume/get-current-track).
     pub fn on_music_action(&self, handler: MusicActionHandler) {
         self.inner.lock().unwrap().music_action_handlers.push(handler);
+    }
+
+    /// Register a handler called when the watch sends a phone control action
+    /// (answer / hangup).
+    pub fn on_phone_action(&self, handler: PhoneActionHandler) {
+        self.inner.lock().unwrap().phone_action_handlers.push(handler);
     }
 
     pub fn on_watch_pref(&self, handler: WatchPrefHandler) {
@@ -932,6 +944,48 @@ impl Pebble {
         self.send_pebble(Endpoint::MusicControl, &build_update_volume(volume_percent))
     }
 
+    // ── Phone calls ────────────────────────────────────────────────────
+
+    /// Push an incoming call to the watch (shows caller screen).
+    pub async fn push_incoming_call(
+        &self,
+        cookie: u32,
+        caller_number: &str,
+        caller_name: &str,
+    ) -> Result<(), PebbleError> {
+        debug!("phone: incoming call cookie={cookie} from {caller_name}");
+        self.send_pebble(
+            Endpoint::PhoneControl,
+            &build_incoming_call(cookie, caller_number, caller_name),
+        )
+    }
+
+    /// Push a missed call notification to the watch.
+    pub async fn push_missed_call(
+        &self,
+        cookie: u32,
+        caller_number: &str,
+        caller_name: &str,
+    ) -> Result<(), PebbleError> {
+        debug!("phone: missed call cookie={cookie} from {caller_name}");
+        self.send_pebble(
+            Endpoint::PhoneControl,
+            &build_missed_call(cookie, caller_number, caller_name),
+        )
+    }
+
+    /// Notify the watch that the call is now active (answered).
+    pub async fn push_call_start(&self, cookie: u32) -> Result<(), PebbleError> {
+        debug!("phone: call {cookie} started");
+        self.send_pebble(Endpoint::PhoneControl, &build_call_start(cookie))
+    }
+
+    /// Notify the watch that the call has ended.
+    pub async fn push_call_end(&self, cookie: u32) -> Result<(), PebbleError> {
+        debug!("phone: call {cookie} ended");
+        self.send_pebble(Endpoint::PhoneControl, &build_call_end(cookie))
+    }
+
     pub async fn update_time(&self) -> Result<(), PebbleError> {
         if !self.is_connected() {
             return Err(PebbleError::NotConnected);
@@ -1260,6 +1314,16 @@ fn on_pebble_message(message: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
             if let Some(action) = parse_music_command(payload) {
                 debug!("music action from watch: {}", action.as_str());
                 let handlers: Vec<_> = inner.lock().unwrap().music_action_handlers.clone();
+                for h in handlers {
+                    h(action);
+                }
+            }
+        }
+        Some(Endpoint::PhoneControl) => {
+            debug!("phone packet from watch: {payload:02x?}");
+            if let Some(action) = parse_phone_action(payload) {
+                debug!("phone action from watch: {action:?}");
+                let handlers: Vec<_> = inner.lock().unwrap().phone_action_handlers.clone();
                 for h in handlers {
                     h(action);
                 }

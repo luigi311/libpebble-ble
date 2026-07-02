@@ -8,7 +8,8 @@ use std::sync::Arc;
 use libpebble_ble::{
     decode_watch_pref, parse_activity_preferences, parse_heart_rate_preferences,
     parse_hrm_preferences, parse_units_distance, AppRunStateHandler, BatteryHandler,
-    HealthDataHandler, MusicAction, MusicActionHandler, Pebble, WatchPrefHandler,
+    HealthDataHandler, MusicAction, MusicActionHandler, Pebble, PhoneAction,
+    PhoneActionHandler, WatchPrefHandler,
 };
 use tracing::{debug, info, warn};
 
@@ -74,6 +75,10 @@ pub async fn run_supervisor(daemon: CobbleDaemon) {
             pebble.on_music_action(Arc::new(move |action: MusicAction| {
                 let _ = tx.send(DaemonEvent::MusicAction(action.as_str().to_string()));
             }) as MusicActionHandler);
+            let tx = event_tx.clone();
+            pebble.on_phone_action(Arc::new(move |action: PhoneAction| {
+                let _ = tx.send(DaemonEvent::PhoneAction(action));
+            }) as PhoneActionHandler);
 
             // The watch syncs the health profile through the WatchPrefs DB
             // (db 12), keyed by name — HealthParams (db 7) is NotSupported for

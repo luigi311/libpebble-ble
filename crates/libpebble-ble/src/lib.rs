@@ -19,6 +19,7 @@ pub use endpoints::health::{
     HrmPreferences,
 };
 pub use endpoints::music::{MusicAction, MusicPlaybackState, MusicRepeat, MusicShuffle};
+pub use endpoints::phone_control::PhoneAction;
 pub use endpoints::reset::ResetCommand;
 pub use endpoints::screenshot::ScreenshotVersion;
 pub use endpoints::system::{
@@ -30,5 +31,5 @@ pub use endpoints::Endpoint;
 pub use error::PebbleError;
 pub use pebble::{
     AckHandler, AppMessageHandler, AppRunStateHandler, BatteryHandler, HealthDataHandler,
-    MusicActionHandler, NackHandler, Pebble, Screenshot, WatchPrefHandler,
+    MusicActionHandler, PhoneActionHandler, NackHandler, Pebble, Screenshot, WatchPrefHandler,
 };
