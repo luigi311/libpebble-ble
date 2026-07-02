@@ -46,6 +46,11 @@ impl CallMap {
         if let Some(c) = cookie { map.remove(&c); }
         cookie
     }
+
+    async fn find_by_path(&self, call_path: &str) -> Option<u32> {
+        let map = self.inner.lock().await;
+        map.iter().find(|(_, c)| c.call_path == call_path).map(|(k, _)| *k)
+    }
 }
 
 // ── Public entry point ──────────────────────────────────────────────────
@@ -72,7 +77,7 @@ pub async fn run_call_monitor(daemon: CobbleDaemon, mut action_rx: mpsc::Unbound
     tokio::spawn(async move { watch_ofono(&conn3, &daemon3, &map3).await });
 
     while let Some((action, cookie)) = action_rx.recv().await {
-        handle_watch_action(&conn, &map, &action, cookie).await;
+        handle_watch_action(&conn, &daemon, &map, &action, cookie).await;
     }
 }
 
@@ -138,7 +143,7 @@ async fn handle_mm_call(conn: &Connection, daemon: &CobbleDaemon, map: &CallMap,
 
     let cookie = NEXT_COOKIE.fetch_add(1, Ordering::SeqCst);
     map.insert(cookie, ModemCall { bus_name: "org.freedesktop.ModemManager1".into(), call_path: call_path.to_string() }).await;
-    info!("call-monitor: incoming MM call from {number} (cookie={cookie})");
+    debug!("call-monitor: incoming MM call (cookie={cookie})");
     let _ = daemon.push_incoming_call(cookie, number.clone(), number).await;
 }
 
@@ -159,7 +164,8 @@ async fn handle_mm_property_change(_conn: &Connection, daemon: &CobbleDaemon, ma
                     let _ = daemon.push_call_end(cookie).await;
                 }
             } else if s == 3 {
-                if let Some(cookie) = map.remove_by_path(&call_path).await {
+                // Call became active — notify watch, keep cookie for hangup.
+                if let Some(cookie) = map.find_by_path(&call_path).await {
                     debug!("call-monitor: MM call {cookie} active");
                     let _ = daemon.push_call_start(cookie).await;
                 }
@@ -175,6 +181,7 @@ async fn handle_mm_property_change(_conn: &Connection, daemon: &CobbleDaemon, ma
 async fn watch_ofono(conn: &Connection, daemon: &CobbleDaemon, map: &CallMap) {
     trace!("call-monitor: starting oFono watcher");
     let _ = add_match(conn, "type='signal',sender='org.ofono',interface='org.ofono.VoiceCallManager',member='CallAdded'").await;
+    let _ = add_match(conn, "type='signal',sender='org.ofono',interface='org.ofono.VoiceCall',member='PropertyChanged'").await;
 
     match list_mm_objects(conn, "org.ofono", "/org/ofono").await {
         Ok(modems) => {
@@ -221,7 +228,7 @@ async fn scan_ofono_calls(conn: &Connection, daemon: &CobbleDaemon, map: &CallMa
                         if !num.is_empty() {
                             let cookie = NEXT_COOKIE.fetch_add(1, Ordering::SeqCst);
                             map.insert(cookie, ModemCall { bus_name: "org.ofono".into(), call_path: path.clone() }).await;
-                            info!("call-monitor: incoming oFono call from {num} (cookie={cookie})");
+                            debug!("call-monitor: incoming oFono call (cookie={cookie})");
                             let _ = daemon.push_incoming_call(cookie, num.clone(), num).await;
                         }
                     }
@@ -239,7 +246,7 @@ async fn handle_ofono_call(daemon: &CobbleDaemon, map: &CallMap, call_path: &str
 
     let cookie = NEXT_COOKIE.fetch_add(1, Ordering::SeqCst);
     map.insert(cookie, ModemCall { bus_name: "org.ofono".into(), call_path: call_path.to_string() }).await;
-    info!("call-monitor: incoming oFono call from {number} (cookie={cookie})");
+    debug!("call-monitor: incoming oFono call (cookie={cookie})");
     let _ = daemon.push_incoming_call(cookie, number.clone(), number).await;
 }
 
@@ -259,7 +266,8 @@ async fn handle_ofono_property_change(daemon: &CobbleDaemon, map: &CallMap, msg:
             let _ = daemon.push_call_end(cookie).await;
         }
     } else if state == "active" {
-        if let Some(cookie) = map.remove_by_path(&call_path).await {
+        // Call answered — notify watch, keep cookie for hangup.
+        if let Some(cookie) = map.find_by_path(&call_path).await {
             debug!("call-monitor: oFono call {cookie} active");
             let _ = daemon.push_call_start(cookie).await;
         }
@@ -270,12 +278,9 @@ async fn handle_ofono_property_change(daemon: &CobbleDaemon, map: &CallMap, msg:
 // Watch → modem forwarding
 // ═══════════════════════════════════════════════════════════════════════
 
-async fn handle_watch_action(conn: &Connection, map: &CallMap, action: &str, cookie: u32) {
+async fn handle_watch_action(conn: &Connection, daemon: &CobbleDaemon, map: &CallMap, action: &str, cookie: u32) {
     let call = match action {
-        // Answer: look up without removing — the call is still active and
-        // the user needs to be able to hang up later.
         "answer" => map.get(cookie).await,
-        // Hangup: remove — the call is done.
         "hangup" => map.take(cookie).await,
         _ => None,
     };
@@ -294,6 +299,11 @@ async fn handle_watch_action(conn: &Connection, map: &CallMap, action: &str, coo
 
     info!("call-monitor: {action} → {}/{}", call.bus_name, call.call_path);
     let _ = conn.call_method(Some(call.bus_name.as_str()), call.call_path.as_str(), Some(iface), method, &()).await;
+
+    // After a successful answer, transition the watch to the in-call screen.
+    if action == "answer" {
+        let _ = daemon.push_call_start(cookie).await;
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

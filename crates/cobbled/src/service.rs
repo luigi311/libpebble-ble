@@ -1195,12 +1195,8 @@ pub async fn run_signal_emitter(
                     libpebble_ble::PhoneAction::Hangup { cookie } => ("hangup", cookie),
                 };
                 let _ = CobbleDaemon::phone_action_received(emitter, name, cookie).await;
-                // Auto-transition the watch UI: Answer → in-call screen
-                // (End Call button), Hangup → idle.
-                if name == "answer" {
-                    let _ = daemon.push_call_start(cookie).await;
-                }
-                // Forward to the call monitor so it can control the modem.
+                // Forward to the call monitor — it will call push_call_start
+                // only after the modem confirms the answer.
                 let _ = daemon.phone_action_tx().send((name.to_string(), cookie));
             }
             DaemonEvent::AppMessageReceived { uuid, data } => {

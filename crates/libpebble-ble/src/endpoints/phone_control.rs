@@ -91,9 +91,18 @@ fn build_call_string(cmd: u8, cookie: u32, caller_number: &str, caller_name: &st
     out
 }
 
-/// Truncate to `max` bytes (not chars) and strip interior nulls.
+/// Truncate to `max` bytes (not chars), rounding down to a valid UTF-8
+/// boundary, and strip interior nulls.
 fn truncate_bytes(s: &str, max: usize) -> &str {
-    let s = &s[..s.len().min(max)];
+    let s = if s.len() > max {
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    } else {
+        s
+    };
     if let Some(pos) = s.bytes().position(|b| b == 0) {
         &s[..pos]
     } else {
