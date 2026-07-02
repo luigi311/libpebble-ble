@@ -17,6 +17,7 @@ mod codec;
 mod config;
 mod config_watcher;
 mod db;
+mod mpris_monitor;
 mod notification;
 mod notify_monitor;
 mod service;
@@ -99,7 +100,10 @@ async fn main() -> anyhow::Result<()> {
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-    let daemon = CobbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), config_path.clone(), event_tx, health_db.clone());
+    // Channel for forwarding watch music-control actions to the MPRIS monitor.
+    let (music_action_tx, music_action_rx) = mpsc::unbounded_channel();
+
+    let daemon = CobbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), config_path.clone(), event_tx, health_db.clone(), music_action_tx);
 
     // Build the session D-Bus connection.
     let conn = zbus::connection::Builder::session()?
@@ -136,6 +140,32 @@ async fn main() -> anyhow::Result<()> {
     // Watch the config file for external changes (manual edits, GUI saves)
     // and auto-reload whenever it is written.
     config_watcher::watch_config(config_path.clone(), daemon.clone());
+
+    // Start the MPRIS media-player monitor — discovers desktop players,
+    // pushes metadata/playback to the watch, and forwards watch actions back.
+    {
+        let daemon2 = daemon.clone();
+        tokio::spawn(async move {
+            let monitor = match mpris_monitor::MprisMonitor::new(daemon2).await {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!("mpris: {e}");
+                    return;
+                }
+            };
+            let monitor = std::sync::Arc::new(monitor);
+            let monitor2 = monitor.clone();
+            // Spawn the action-forwarder: receive from the channel and
+            // dispatch to the active MPRIS player.
+            tokio::spawn(async move {
+                let mut rx = music_action_rx;
+                while let Some(action) = rx.recv().await {
+                    monitor2.handle_action(&action).await;
+                }
+            });
+            monitor.run().await;
+        });
+    }
 
     // Run until SIGINT or SIGTERM.
     let mut sigterm = signal::unix::signal(SignalKind::terminate())?;
