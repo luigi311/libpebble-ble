@@ -7,7 +7,7 @@ use tracing::debug;
 
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
-        .user_agent("cobbled/0.4")
+        .user_agent("cobbled/0.5")
         .timeout(Duration::from_secs(15))
         .build()
         .expect("reqwest client")

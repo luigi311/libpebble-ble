@@ -1,4 +1,15 @@
-cobbled (0.4.0-1) UNRELEASED; urgency=medium
+cobbled (0.5.0-1) unstable; urgency=medium
+
+  * Gui by @luigi311 in https://github.com/luigi311/cobble/pull/24
+  * libpebble_ble: Scan if connect doesnt work on first try by @luigi311 in https://github.com/luigi311/cobble/pull/25
+  * GUI: Add scan for pebble instead of manual text address. Allow daemon to start without config/address by @luigi311 in https://github.com/luigi311/cobble/pull/26
+  * Daemon: Add MPRIS for media controls by @luigi311 in https://github.com/luigi311/cobble/pull/27
+  * Daemon: Add weather fetching by @luigi311 in https://github.com/luigi311/cobble/pull/28
+  * Add phonecall support by @luigi311 in https://github.com/luigi311/cobble/pull/29
+
+ -- Luis Garcia <luigi311@Luigi311-Desktop>  Thu, 02 Jul 2026 19:16:52 +0000
+
+cobbled (0.4.0-1) unstable; urgency=medium
 
   * Process more of the watchperf data by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/15
   * Support multiple verbose flags by @luigi311 in https://github.com/luigi311/libpebble-ble/pull/16
