@@ -150,7 +150,7 @@ async fn fetch_forecast(lat: f64, lon: f64) -> anyhow::Result<Forecast> {
 fn wmo_description(code: u16) -> &'static str {
     match code {
         0 => "Clear",
-        1 | 2 | 3 => "Partly Cloudy",
+        1..=3 => "Partly Cloudy",
         45 | 48 => "Fog",
         51 | 53 | 55 => "Drizzle",
         56 | 57 => "Freezing Drizzle",
@@ -158,7 +158,7 @@ fn wmo_description(code: u16) -> &'static str {
         66 | 67 => "Freezing Rain",
         71 | 73 | 75 => "Snow",
         77 => "Snow Grains",
-        80 | 81 | 82 => "Rain Showers",
+        80..=82 => "Rain Showers",
         85 | 86 => "Snow Showers",
         95 => "Thunderstorm",
         96 | 99 => "Hail",

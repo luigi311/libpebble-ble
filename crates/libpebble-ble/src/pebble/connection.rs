@@ -279,7 +279,7 @@ impl Pebble {
         for i in 1..=attempts {
             if i > 1 {
                 let scan_duration: f64 = 3.0 * i as f64;
-                let _ = Pebble::scan(&adapter.name(), scan_duration).await;
+                let _ = Pebble::scan(adapter.name(), scan_duration).await;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             };
             let device = adapter.device(address)?;

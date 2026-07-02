@@ -48,6 +48,7 @@
 //!     MusicActionReceived(s action)  media-control action from the watch
 //!
 //! AppMessage values cross the D-Bus hop as (tag, payload) pairs; see codec.rs.
+#![allow(clippy::too_many_arguments)]
 
 use std::{
     collections::HashMap,
@@ -438,6 +439,7 @@ impl CobbleDaemon {
 // zbus interface
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 #[interface(name = "org.cobble.Daemon")]
 impl CobbleDaemon {
     // ---- Properties ----
@@ -737,6 +739,7 @@ impl CobbleDaemon {
     ///
     /// `current_weather` / `tomorrow_weather`: 0=PartlyCloudy, 1=CloudyDay, 2=LightSnow,
     ///   3=LightRain, 4=HeavyRain, 5=HeavySnow, 6=Generic, 7=Sun, 8=RainAndSnow, 255=Unknown
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn push_weather(
         &self,
         location_key: Vec<u8>,
@@ -865,7 +868,7 @@ impl CobbleDaemon {
         }
 
         // Bump the revision so any waiting supervisor wakes up.
-        let _ = self.config_revision.send_modify(|r| *r += 1);
+        self.config_revision.send_modify(|r| *r += 1);
 
         Ok(())
     }

@@ -517,6 +517,7 @@ impl Pebble {
     ///
     /// `location_key` is a 16-byte UUID that identifies the weather location.
     /// Re-using the same UUID on subsequent calls updates the existing entry.
+    #[allow(clippy::too_many_arguments)]
     pub async fn push_weather(
         &self,
         location_key: &[u8; 16],

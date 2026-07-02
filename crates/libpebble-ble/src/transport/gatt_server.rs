@@ -210,17 +210,14 @@ pub async fn start_gatt_server(
 
             tokio::select! {
                 Some(event) = ctrl.next() => {
-                    match event {
-                        CharacteristicControlEvent::Notify(writer) => {
-                            debug!("watch subscribed to PPoGATT server characteristic");
-                            let (tx, rx) = mpsc::unbounded_channel();
-                            notify_tx = Some(tx);
-                            let disc = on_disconnect.clone();
-                            let mtu_clone = mtu_for_task.clone();
-                            tokio::spawn(write_task(writer, rx, disc, mtu_clone));
-                            connected_notify.notify_waiters();
-                        }
-                        _ => {}
+                    if let CharacteristicControlEvent::Notify(writer) = event {
+                        debug!("watch subscribed to PPoGATT server characteristic");
+                        let (tx, rx) = mpsc::unbounded_channel();
+                        notify_tx = Some(tx);
+                        let disc = on_disconnect.clone();
+                        let mtu_clone = mtu_for_task.clone();
+                        tokio::spawn(write_task(writer, rx, disc, mtu_clone));
+                        connected_notify.notify_waiters();
                     }
                 }
 

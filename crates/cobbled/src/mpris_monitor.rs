@@ -376,7 +376,7 @@ async fn try_pactl_set_volume(step: &str) -> std::io::Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         debug!("mpris: pactl set-sink-volume {step} failed: {}", stderr.trim());
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, stderr.into_owned()));
+        return Err(std::io::Error::other(stderr.into_owned()));
     }
     trace!("mpris: pactl set-sink-volume {step} ok");
     Ok(())
@@ -393,7 +393,7 @@ async fn try_wpctl_set_volume(delta: f64) -> std::io::Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         debug!("mpris: wpctl set-volume {arg} failed: {}", stderr.trim());
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, stderr.into_owned()));
+        return Err(std::io::Error::other(stderr.into_owned()));
     }
     trace!("mpris: wpctl set-volume {arg} ok");
     Ok(())

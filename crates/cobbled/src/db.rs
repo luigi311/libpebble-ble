@@ -265,7 +265,7 @@ impl AppDb {
             warn!("activity item_size={item_size} too small; skipping");
             return Ok(());
         }
-        if data.is_empty() || data.len() % item_size != 0 {
+        if data.is_empty() || !data.len().is_multiple_of(item_size) {
             return Ok(());
         }
 
@@ -411,7 +411,7 @@ impl AppDb {
             );
             return Ok(());
         }
-        if data.is_empty() || data.len() % item_size != 0 {
+        if data.is_empty() || !data.len().is_multiple_of(item_size) {
             return Ok(());
         }
 

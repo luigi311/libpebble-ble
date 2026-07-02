@@ -47,7 +47,6 @@ pub fn parse_phone_action(payload: &[u8]) -> Option<PhoneAction> {
 
 /// `cookie` is an arbitrary u32 that the watch echoes back in Answer/Hangup
 /// so the phone can match the action to the right call.
-
 pub fn build_incoming_call(cookie: u32, caller_number: &str, caller_name: &str) -> Vec<u8> {
     build_call_string(CMD_INCOMING_CALL, cookie, caller_number, caller_name)
 }

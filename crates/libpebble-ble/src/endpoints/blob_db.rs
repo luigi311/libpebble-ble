@@ -162,6 +162,7 @@ pub fn build_blobdb_insert_with_timestamp(
 ///   isCurrentLocation u8 | allStringsLength u16 | locationName SLongString | forecastShort SLongString
 ///
 /// SLongString = [u16 LE length][utf-8 bytes]
+#[allow(clippy::too_many_arguments)]
 pub fn build_weather_blob(
     location_name: &str,
     forecast_short: &str,
