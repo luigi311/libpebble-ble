@@ -48,6 +48,7 @@
 //!     MusicActionReceived(s action)  media-control action from the watch
 //!
 //! AppMessage values cross the D-Bus hop as (tag, payload) pairs; see codec.rs.
+#![allow(clippy::too_many_arguments)]
 
 use std::{
     collections::HashMap,
@@ -56,7 +57,7 @@ use std::{
 };
 
 use libpebble_ble::{
-    ActivityPreferences, AppMessageValue, DatalogData, HeartRatePreferences, HrmPreferences,
+    ActivityPreferences, HeartRatePreferences, HrmPreferences,
     MusicPlaybackState, MusicRepeat, MusicShuffle, Pebble, WatchColorInfo, WatchPrefValue,
     WatchVersionInfo, WeatherType,
 };
@@ -67,74 +68,19 @@ use tracing::{debug, warn};
 use zbus::{
     interface,
     object_server::SignalEmitter,
-    zvariant::{OwnedValue, Value},
+    zvariant::OwnedValue,
     Connection,
 };
 
 use crate::codec::{decode_wire_dict, encode_wire_dict, WireDict};
 use crate::notification::app_name_to_category;
 
-/// Custom D-Bus errors under the `org.cobble.Daemon` prefix.
-/// `NotConnected` lets the Python client's `_translate()` raise `NotConnectedError`
-/// instead of a generic `DBusError`.
-#[derive(Debug, zbus::DBusError)]
-#[zbus(prefix = "org.cobble.Daemon")]
-pub(crate) enum DaemonError {
-    NotConnected(String),
-    Failed(String),
-}
-
-pub const BUS_NAME: &str = "org.cobble.Daemon";
-pub const OBJECT_PATH: &str = "/org/cobble/Daemon";
-
-/// System Music app UUID; the watch launches it when the user opens Music.
-const MUSIC_APP_UUID: &str = "1f03293d-47af-4f28-b960-f2b02a6dd757";
-
-// ---------------------------------------------------------------------------
-// Events (supervisor → signal emitter)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-pub enum DaemonEvent {
-    ConnectionChanged(bool),
-    AppMessageReceived { uuid: String, data: HashMap<u32, AppMessageValue> },
-    AckReceived(u8),
-    NackReceived(u8),
-    HealthData(DatalogData),
-    /// Watch battery percentage (0–100) changed.
-    BatteryChanged(u8),
-    /// An app opened (running=true) or closed (running=false) on the watch.
-    AppRunState { uuid: String, running: bool },
-    /// A media-control action the watch sent (play/pause/next/…).
-    MusicAction(String),
-    /// A phone control action the watch sent (answer/hangup).
-    PhoneAction(libpebble_ble::PhoneAction),
-    /// Decoded "activityPreferences" record (height/weight/age/gender) from the watch.
-    HealthProfile(ActivityPreferences),
-    /// Decoded "hrmPreferences" record from the watch.
-    HealthHrm(HrmPreferences),
-    /// Decoded "heartRatePreferences" record from the watch.
-    HealthHeartRate(HeartRatePreferences),
-    /// Decoded "unitsDistance" flag from the watch (true = imperial).
-    HealthUnits(bool),
-    /// A decoded general watch setting (BlobDB WatchPrefs, db 12).
-    WatchSetting { key: String, value: WatchPrefValue },
-}
-
-/// Convert a decoded watch-pref value into a D-Bus variant for `a{sv}`.
-fn watch_pref_owned_value(v: &WatchPrefValue) -> OwnedValue {
-    let value = match v {
-        WatchPrefValue::Bool(b) => Value::from(*b),
-        WatchPrefValue::Number(n) => Value::from(*n),
-        WatchPrefValue::Text(s) => Value::from(s.clone()),
-    };
-    OwnedValue::try_from(value).expect("primitive value converts to OwnedValue")
-}
-
-/// Wrap a primitive into an `OwnedValue` for an `a{sv}` map entry.
-fn dbus_val(v: impl Into<Value<'static>>) -> OwnedValue {
-    OwnedValue::try_from(v.into()).expect("primitive converts to OwnedValue")
-}
+mod state;
+pub(crate) use state::{
+    DaemonError, DaemonEvent, DaemonState, HealthProfile, MusicState,
+    BUS_NAME, MUSIC_APP_UUID, OBJECT_PATH,
+    dbus_val, watch_pref_owned_value,
+};
 
 /// Render watch version info as a self-describing `a{sv}` map. Optional fields
 /// (recovery firmware, health/JS versions) are omitted when absent.
@@ -174,16 +120,6 @@ fn watch_version_to_map(info: &WatchVersionInfo) -> HashMap<String, OwnedValue> 
     m
 }
 
-/// Last music state pushed by a client, replayed to the watch when it sends a
-/// `GetCurrentTrack` request (e.g. on opening its music app).
-#[derive(Default, Clone)]
-struct MusicState {
-    player: Option<(String, String)>,
-    track: Option<(String, String, String, u32, u32, u32)>,
-    play_state: Option<(u8, u32, u32, u8, u8)>,
-    volume: Option<u8>,
-}
-
 /// Encode RGBA8888 pixels as a PNG.
 fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, DaemonError> {
     let mut out = Vec::new();
@@ -212,97 +148,9 @@ fn watch_color_to_map(c: &WatchColorInfo) -> HashMap<String, OwnedValue> {
     ])
 }
 
-/// The watch-side health profile, as synced back over BlobDB2 (WatchPrefs).
-///
-/// Internal type; it crosses D-Bus as a self-describing `a{sv}` map (see
-/// [`HealthProfile::to_dbus_map`]) rather than a positional struct, so clients
-/// read fields by name and a bare-struct serialization quirk is avoided.
-/// HR fields are 0 and `hrm_measurement_interval` is 255 until synced.
-#[derive(Debug, Clone, Copy)]
-pub struct HealthProfile {
-    pub height_cm: u16,
-    pub weight_kg: u16,
-    pub age: u16,
-    /// 0 = female, 1 = male, 2 = other (libpebble3 `HealthGender`).
-    pub gender: u16,
-    pub tracking_enabled: bool,
-    pub activity_insights_enabled: bool,
-    pub sleep_insights_enabled: bool,
-    /// Heart-rate monitoring enabled. `false` until the watch syncs hrmPreferences.
-    pub hrm_enabled: bool,
-    /// 0 = 10min, 1 = 30min, 2 = 1h, 3 = disabled, 255 = not synced yet.
-    pub hrm_measurement_interval: u8,
-    pub hrm_activity_tracking: bool,
-    pub resting_hr: u16,
-    pub elevated_hr: u16,
-    pub max_hr: u16,
-    pub hr_zone1_threshold: u16,
-    pub hr_zone2_threshold: u16,
-    pub hr_zone3_threshold: u16,
-    /// true = imperial (mi/lb), false = metric (km/kg). false until synced.
-    pub imperial_units: bool,
-}
-
-impl HealthProfile {
-    /// Render the profile as a `a{sv}` map keyed by field name for D-Bus.
-    fn to_dbus_map(self) -> HashMap<String, OwnedValue> {
-        fn val(v: impl Into<Value<'static>>) -> OwnedValue {
-            OwnedValue::try_from(v.into()).expect("primitive converts to OwnedValue")
-        }
-        HashMap::from([
-            ("height_cm".into(), val(self.height_cm)),
-            ("weight_kg".into(), val(self.weight_kg)),
-            ("age".into(), val(self.age)),
-            ("gender".into(), val(self.gender)),
-            ("tracking_enabled".into(), val(self.tracking_enabled)),
-            ("activity_insights_enabled".into(), val(self.activity_insights_enabled)),
-            ("sleep_insights_enabled".into(), val(self.sleep_insights_enabled)),
-            ("hrm_enabled".into(), val(self.hrm_enabled)),
-            ("hrm_measurement_interval".into(), val(self.hrm_measurement_interval)),
-            ("hrm_activity_tracking".into(), val(self.hrm_activity_tracking)),
-            ("resting_hr".into(), val(self.resting_hr)),
-            ("elevated_hr".into(), val(self.elevated_hr)),
-            ("max_hr".into(), val(self.max_hr)),
-            ("hr_zone1_threshold".into(), val(self.hr_zone1_threshold)),
-            ("hr_zone2_threshold".into(), val(self.hr_zone2_threshold)),
-            ("hr_zone3_threshold".into(), val(self.hr_zone3_threshold)),
-            ("imperial_units".into(), val(self.imperial_units)),
-        ])
-    }
-}
-
 // ---------------------------------------------------------------------------
 // CobbleDaemon
 // ---------------------------------------------------------------------------
-
-struct DaemonState {
-    address: String,
-    adapter: String,
-    config_path: PathBuf,
-    pebble: Option<Arc<Pebble>>,
-    connected: bool,
-    stopping: bool,
-    // Block unnamed senders (empty app_name) — system daemons and
-    // desktop-environment internals that don't set an app_name should
-    // not be forwarded to the watch.
-    notify_blocklist: Vec<String>,
-    event_tx: mpsc::UnboundedSender<DaemonEvent>,
-    db: Option<Arc<Mutex<AppDb>>>,
-    /// Last health profile the watch synced via WatchPrefs (None until first sync).
-    health_profile: Option<ActivityPreferences>,
-    /// Last "hrmPreferences" record the watch synced (None until first sync).
-    hrm_prefs: Option<HrmPreferences>,
-    /// Last "heartRatePreferences" record the watch synced (None until first sync).
-    heart_rate_prefs: Option<HeartRatePreferences>,
-    /// Last "unitsDistance" flag the watch synced; true = imperial (None until first sync).
-    imperial_units: Option<bool>,
-    /// General watch settings (BlobDB WatchPrefs db 12) decoded so far, keyed by name.
-    watch_settings: HashMap<String, WatchPrefValue>,
-    /// Latest watch battery percentage (0–100); `None` when unknown/disconnected.
-    battery_level: Option<u8>,
-    /// Last pushed music state, replayed on the watch's GetCurrentTrack request.
-    music: MusicState,
-}
 
 #[derive(Clone)]
 pub struct CobbleDaemon {
@@ -591,6 +439,7 @@ impl CobbleDaemon {
 // zbus interface
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 #[interface(name = "org.cobble.Daemon")]
 impl CobbleDaemon {
     // ---- Properties ----
@@ -890,6 +739,7 @@ impl CobbleDaemon {
     ///
     /// `current_weather` / `tomorrow_weather`: 0=PartlyCloudy, 1=CloudyDay, 2=LightSnow,
     ///   3=LightRain, 4=HeavyRain, 5=HeavySnow, 6=Generic, 7=Sun, 8=RainAndSnow, 255=Unknown
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn push_weather(
         &self,
         location_key: Vec<u8>,
@@ -1000,6 +850,12 @@ impl CobbleDaemon {
         let new_cfg = crate::config::load(&config_path)
             .map_err(|e| DaemonError::Failed(e.to_string()))?;
 
+        debug!(
+            "reload_config: adapter={}, address{}",
+            new_cfg.adapter,
+            if new_cfg.address.is_empty() { " (none)" } else { " set" },
+        );
+
         // Read state.pebble in the same lock scope as the config update so
         // we always disconnect the handle that was live when the new params
         // were applied — no window for the supervisor to slip in a new
@@ -1018,7 +874,7 @@ impl CobbleDaemon {
         }
 
         // Bump the revision so any waiting supervisor wakes up.
-        let _ = self.config_revision.send_modify(|r| *r += 1);
+        self.config_revision.send_modify(|r| *r += 1);
 
         Ok(())
     }
@@ -1149,12 +1005,12 @@ pub async fn run_signal_emitter(
                 if c {
                     // The connect-time battery read can be queued before this
                     // event and dropped by the disconnected gate; deliver it now.
-                    if let Some(level) = daemon.session_battery_level() {
-                        if daemon.set_battery_level(level) {
-                            let _ =
-                                iface.get().await.battery_level_changed(iface.signal_emitter()).await;
-                            let _ = CobbleDaemon::battery_changed(emitter, i16::from(level)).await;
-                        }
+                    if let Some(level) = daemon.session_battery_level()
+                        && daemon.set_battery_level(level)
+                    {
+                        let _ =
+                            iface.get().await.battery_level_changed(iface.signal_emitter()).await;
+                        let _ = CobbleDaemon::battery_changed(emitter, i16::from(level)).await;
                     }
                 } else {
                     // Battery is unknown while disconnected (state was cleared).

@@ -8,7 +8,7 @@ use anyhow::Context;
 use libpebble_ble::endpoints::datalog::tag as datalog_tag;
 use libpebble_ble::DatalogData;
 use rusqlite::{Connection, params};
-use tracing::warn;
+use tracing::{debug, warn};
 
 // Pebble firmware version constants (from RecordVersion enum in dataloggingendpoint.cpp).
 const VERSION_FW_3_10_AND_BELOW: u16 = 5;
@@ -265,7 +265,7 @@ impl AppDb {
             warn!("activity item_size={item_size} too small; skipping");
             return Ok(());
         }
-        if data.is_empty() || data.len() % item_size != 0 {
+        if data.is_empty() || !data.len().is_multiple_of(item_size) {
             return Ok(());
         }
 
@@ -411,7 +411,7 @@ impl AppDb {
             );
             return Ok(());
         }
-        if data.is_empty() || data.len() % item_size != 0 {
+        if data.is_empty() || !data.len().is_multiple_of(item_size) {
             return Ok(());
         }
 
@@ -518,6 +518,12 @@ impl AppDb {
         })();
         if result.is_ok() {
             self.conn.execute_batch("COMMIT")?;
+            debug!(
+                "db reprocess: {} steps records, {} sleep + {} session records",
+                steps_records.len(),
+                sleep_records.len(),
+                session_records.len(),
+            );
         } else {
             let _ = self.conn.execute_batch("ROLLBACK");
         }

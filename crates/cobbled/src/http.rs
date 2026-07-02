@@ -3,7 +3,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use tracing::debug;
+use tracing::{debug, trace, warn};
 
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -25,7 +25,9 @@ pub async fn http_get(url: &str) -> anyhow::Result<String> {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         if resp.status().is_success() {
-            return resp.text().await.map_err(|e| anyhow::anyhow!("{e}"));
+            let body = resp.text().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            trace!("http: GET {} -> {} bytes", url, body.len());
+            return Ok(body);
         }
         if resp.status().as_u16() == 429 && retries < 3 {
             retries += 1;
@@ -34,11 +36,11 @@ pub async fn http_get(url: &str) -> anyhow::Result<String> {
             tokio::time::sleep(Duration::from_secs(delay)).await;
             continue;
         }
-        return Err(anyhow::anyhow!(
-            "HTTP {}: {}",
-            resp.status().as_u16(),
-            resp.text().await.unwrap_or_default().lines().next().unwrap_or("")
-        ));
+        let status = resp.status().as_u16();
+        let body_preview = resp.text().await.unwrap_or_default();
+        let preview = body_preview.lines().next().unwrap_or("");
+        warn!("http: GET {url} -> HTTP {status}: {preview}");
+        return Err(anyhow::anyhow!("HTTP {status}: {preview}"));
     }
 }
 

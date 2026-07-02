@@ -69,7 +69,9 @@ pub struct PebbleGattServerHandle {
 impl PebbleGattServerHandle {
     /// Queue one whole Pebble Protocol message for transmission to the watch.
     pub fn send(&self, pebble_message: Vec<u8>) {
-        let _ = self.send_tx.send(pebble_message);
+        if self.send_tx.send(pebble_message).is_err() {
+            debug!("GATT send channel closed; message dropped");
+        }
     }
 
     pub fn set_mtu(&self, mtu: usize) {
@@ -99,13 +101,20 @@ async fn write_task(
                 match packet {
                     Some(data) => {
                         if writer.send(&data).await.is_err() {
+                            debug!("GATT write failed; watch disconnected");
                             break;
                         }
                     }
-                    None => break,
+                    None => {
+                        debug!("GATT packet channel closed; writer exiting");
+                        break;
+                    }
                 }
             }
-            _ = writer.closed() => break,
+            _ = writer.closed() => {
+                debug!("GATT writer closed by remote");
+                break;
+            }
         }
     }
     on_disconnect();
@@ -210,17 +219,14 @@ pub async fn start_gatt_server(
 
             tokio::select! {
                 Some(event) = ctrl.next() => {
-                    match event {
-                        CharacteristicControlEvent::Notify(writer) => {
-                            debug!("watch subscribed to PPoGATT server characteristic");
-                            let (tx, rx) = mpsc::unbounded_channel();
-                            notify_tx = Some(tx);
-                            let disc = on_disconnect.clone();
-                            let mtu_clone = mtu_for_task.clone();
-                            tokio::spawn(write_task(writer, rx, disc, mtu_clone));
-                            connected_notify.notify_waiters();
-                        }
-                        _ => {}
+                    if let CharacteristicControlEvent::Notify(writer) = event {
+                        debug!("watch subscribed to PPoGATT server characteristic");
+                        let (tx, rx) = mpsc::unbounded_channel();
+                        notify_tx = Some(tx);
+                        let disc = on_disconnect.clone();
+                        let mtu_clone = mtu_for_task.clone();
+                        tokio::spawn(write_task(writer, rx, disc, mtu_clone));
+                        connected_notify.notify_waiters();
                     }
                 }
 
@@ -260,6 +266,7 @@ fn handle_ppogatt_in(
     session_ready_notify: &Arc<Notify>,
 ) {
     if packet.is_empty() {
+        trace!("PPoGATT empty packet ignored");
         return;
     }
     let (cmd_byte, serial) = parse_ppogatt_header(packet[0]);
@@ -333,10 +340,10 @@ fn send_raw(
     packet: Vec<u8>,
     notify_tx: &mut Option<mpsc::UnboundedSender<Vec<u8>>>,
 ) {
-    if let Some(tx) = notify_tx {
-        if tx.send(packet).is_err() {
-            warn!("PPoGATT notify channel closed (link down)");
-            *notify_tx = None;
-        }
+    if let Some(tx) = notify_tx
+        && tx.send(packet).is_err()
+    {
+        warn!("PPoGATT notify channel closed (link down)");
+        *notify_tx = None;
     }
 }

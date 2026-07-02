@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 use zbus::{zvariant::OwnedValue, Connection, MessageStream};
 
 use crate::service::CobbleDaemon;
@@ -156,19 +156,19 @@ async fn handle_mm_property_change(_conn: &Connection, daemon: &CobbleDaemon, ma
     let Ok((iface, changed, _)) = body.deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>() else { return };
     if iface != "org.freedesktop.ModemManager1.Call" { return; }
 
-    if let Some(state) = changed.get("State") {
-        if let Ok(s) = state.downcast_ref::<i32>() {
-            if s == 9 {
-                if let Some(cookie) = map.remove_by_path(&call_path).await {
-                    debug!("call-monitor: MM call {cookie} terminated");
-                    let _ = daemon.push_call_end(cookie).await;
-                }
-            } else if s == 3 {
-                // Call became active — notify watch, keep cookie for hangup.
-                if let Some(cookie) = map.find_by_path(&call_path).await {
-                    debug!("call-monitor: MM call {cookie} active");
-                    let _ = daemon.push_call_start(cookie).await;
-                }
+    if let Some(state) = changed.get("State")
+        && let Ok(s) = state.downcast_ref::<i32>()
+    {
+        if s == 9 {
+            if let Some(cookie) = map.remove_by_path(&call_path).await {
+                debug!("call-monitor: MM call {cookie} terminated");
+                let _ = daemon.push_call_end(cookie).await;
+            }
+        } else if s == 3 {
+            // Call became active — notify watch, keep cookie for hangup.
+            if let Some(cookie) = map.find_by_path(&call_path).await {
+                debug!("call-monitor: MM call {cookie} active");
+                let _ = daemon.push_call_start(cookie).await;
             }
         }
     }
@@ -221,17 +221,17 @@ async fn scan_ofono_calls(conn: &Connection, daemon: &CobbleDaemon, map: &CallMa
         for call_path in calls {
             let path = call_path.to_string();
             let state: Option<String> = get_ofono_prop(conn, &path, "org.ofono.VoiceCall", "State").await;
-            if let Some(ref s) = state {
-                if s == "incoming" || s == "waiting" {
-                    let number: Option<String> = get_ofono_prop(conn, &path, "org.ofono.VoiceCall", "LineIdentification").await;
-                    if let Some(num) = number {
-                        if !num.is_empty() {
-                            let cookie = NEXT_COOKIE.fetch_add(1, Ordering::SeqCst);
-                            map.insert(cookie, ModemCall { bus_name: "org.ofono".into(), call_path: path.clone() }).await;
-                            debug!("call-monitor: incoming oFono call (cookie={cookie})");
-                            let _ = daemon.push_incoming_call(cookie, num.clone(), num).await;
-                        }
-                    }
+            if let Some(ref s) = state
+                && (s == "incoming" || s == "waiting")
+            {
+                let number: Option<String> = get_ofono_prop(conn, &path, "org.ofono.VoiceCall", "LineIdentification").await;
+                if let Some(num) = number
+                    && !num.is_empty()
+                {
+                    let cookie = NEXT_COOKIE.fetch_add(1, Ordering::SeqCst);
+                    map.insert(cookie, ModemCall { bus_name: "org.ofono".into(), call_path: path.clone() }).await;
+                    debug!("call-monitor: incoming oFono call (cookie={cookie})");
+                    let _ = daemon.push_incoming_call(cookie, num.clone(), num).await;
                 }
             }
         }
@@ -297,7 +297,7 @@ async fn handle_watch_action(conn: &Connection, daemon: &CobbleDaemon, map: &Cal
         _ => return,
     };
 
-    info!("call-monitor: {action} → {}/{}", call.bus_name, call.call_path);
+    debug!("call-monitor: {action} → {}/{}", call.bus_name, call.call_path);
     let _ = conn.call_method(Some(call.bus_name.as_str()), call.call_path.as_str(), Some(iface), method, &()).await;
 
     // After a successful answer, transition the watch to the in-call screen.
@@ -319,11 +319,11 @@ async fn list_mm_objects(conn: &Connection, bus: &str, base_path: &str) -> zbus:
     let xml: String = reply.body().deserialize()?;
     let mut paths = Vec::new();
     for line in xml.lines() {
-        if let Some(name) = line.trim().strip_prefix("<node name=\"") {
-            if let Some(end) = name.find('"') {
-                let child = &name[..end];
-                if child != "Voice" { paths.push(format!("{base_path}/{child}")); }
-            }
+        if let Some(name) = line.trim().strip_prefix("<node name=\"")
+            && let Some(end) = name.find('"')
+        {
+            let child = &name[..end];
+            if child != "Voice" { paths.push(format!("{base_path}/{child}")); }
         }
     }
     Ok(paths)

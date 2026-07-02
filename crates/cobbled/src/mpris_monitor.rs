@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use tokio::sync::Mutex;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 use zbus::{zvariant::OwnedValue, Connection, MessageStream};
 
 use crate::service::CobbleDaemon;
@@ -71,18 +71,18 @@ impl MprisMonitor {
                     *active = None;
                     if let Ok(players) = self.list_players().await {
                         for p in players {
-                            if p != name {
-                                if let Some(s) = self.read_player_state(&p).await {
-                                    *active = Some(s);
-                                    break;
-                                }
+                            if p != name
+                                && let Some(s) = self.read_player_state(&p).await
+                            {
+                                *active = Some(s);
+                                break;
                             }
                         }
                     }
                 }
             }
             if !new_owner.is_empty() {
-                info!("mpris: player {name} appeared");
+                debug!("mpris: player {name} appeared");
                 self.track_player(name).await;
             }
         }
@@ -376,7 +376,7 @@ async fn try_pactl_set_volume(step: &str) -> std::io::Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         debug!("mpris: pactl set-sink-volume {step} failed: {}", stderr.trim());
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, stderr.into_owned()));
+        return Err(std::io::Error::other(stderr.into_owned()));
     }
     trace!("mpris: pactl set-sink-volume {step} ok");
     Ok(())
@@ -393,7 +393,7 @@ async fn try_wpctl_set_volume(delta: f64) -> std::io::Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         debug!("mpris: wpctl set-volume {arg} failed: {}", stderr.trim());
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, stderr.into_owned()));
+        return Err(std::io::Error::other(stderr.into_owned()));
     }
     trace!("mpris: wpctl set-volume {arg} ok");
     Ok(())

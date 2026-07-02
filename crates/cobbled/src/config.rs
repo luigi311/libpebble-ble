@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::Deserialize;
+use tracing::debug;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -46,6 +47,7 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
             // Return a default config so the daemon can start without a
             // pre-existing config file. The GUI (or manual editing) can
             // supply a watch address later; reload_config will pick it up.
+            debug!("config file {} not found; using defaults", path.display());
             Ok(Config {
                 address: String::new(),
                 adapter: default_adapter(),
