@@ -32,21 +32,25 @@ pub async fn run_weather(daemon: CobbleDaemon) {
     let key = location_key();
     let mut rx = daemon.watch_connection();
     loop {
-        if !*rx.borrow() {
+        // Wait until connected.
+        while !*rx.borrow() {
             let _ = rx.changed().await;
         }
         if let Err(e) = refresh(&daemon, key).await {
             warn!("weather: refresh failed: {e}");
         }
+        // Wait for either the 3-hour timer or a disconnect.
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(3 * 3600)) => {}
-            _ = rx.changed() => continue,
+            _ = rx.changed() => {}
         }
+        // Loop back: the `while` above re-verifies connection state
+        // before calling refresh again.
     }
 }
 
 async fn refresh(daemon: &CobbleDaemon, key: [u8; 16]) -> anyhow::Result<()> {
-    let (lat, lon, location_name) = location::get_location().await?;
+    let (lat, lon, location_name) = location::get_location(daemon.db()).await?;
     info!("weather: {lat:.4},{lon:.4} ({location_name})");
 
     let forecast = fetch_forecast(lat, lon).await?;
@@ -111,6 +115,14 @@ async fn fetch_forecast(lat: f64, lon: f64) -> anyhow::Result<Forecast> {
 
     let current = &json["current"];
     let daily = &json["daily"];
+
+    // Validate response shape before extracting values.
+    if current.is_null() || daily.is_null() {
+        return Err(anyhow::anyhow!("Open-Meteo: missing current or daily section"));
+    }
+    if daily["temperature_2m_max"].as_array().map_or(0, |a| a.len()) < 2 {
+        return Err(anyhow::anyhow!("Open-Meteo: expected 2 forecast days"));
+    }
 
     let current_temp = current["temperature_2m"].as_f64().map_or(0, |v| v.round() as i16);
     let current_wmo: u16 = current["weather_code"].as_u64().unwrap_or(0) as u16;

@@ -61,7 +61,7 @@ use libpebble_ble::{
     WatchVersionInfo, WeatherType,
 };
 
-use crate::db::HealthDb;
+use crate::db::AppDb;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, warn};
 use zbus::{
@@ -285,7 +285,7 @@ struct DaemonState {
     // not be forwarded to the watch.
     notify_blocklist: Vec<String>,
     event_tx: mpsc::UnboundedSender<DaemonEvent>,
-    db: Option<Arc<Mutex<HealthDb>>>,
+    db: Option<Arc<Mutex<AppDb>>>,
     /// Last health profile the watch synced via WatchPrefs (None until first sync).
     health_profile: Option<ActivityPreferences>,
     /// Last "hrmPreferences" record the watch synced (None until first sync).
@@ -321,7 +321,7 @@ impl CobbleDaemon {
         adapter: String,
         config_path: PathBuf,
         event_tx: mpsc::UnboundedSender<DaemonEvent>,
-        db: Option<Arc<Mutex<HealthDb>>>,
+        db: Option<Arc<Mutex<AppDb>>>,
         music_action_tx: mpsc::UnboundedSender<String>,
     ) -> Self {
         let (config_revision, _) = watch::channel(0);
@@ -370,6 +370,11 @@ impl CobbleDaemon {
     /// Returns a receiver that fires when the watch connects or disconnects.
     pub fn watch_connection(&self) -> watch::Receiver<bool> {
         self.connection_tx.subscribe()
+    }
+
+    /// Returns the shared app database handle, if available.
+    pub fn db(&self) -> Option<Arc<Mutex<AppDb>>> {
+        self.state.lock().unwrap().db.clone()
     }
 
     /// Returns a clone of the music-action sender; used by the signal
@@ -919,7 +924,7 @@ impl CobbleDaemon {
     /// utc_offset for rows that were stored before the column existed.
     async fn reprocess_health_data(&self) -> Result<(), DaemonError> {
         let db = self.state.lock().unwrap().db.clone();
-        let db = db.ok_or_else(|| DaemonError::Failed("health database not available".into()))?;
+        let db = db.ok_or_else(|| DaemonError::Failed("app database not available".into()))?;
         tokio::task::spawn_blocking(move || db.lock().unwrap().reprocess())
             .await
             .map_err(|e| DaemonError::Failed(e.to_string()))?
@@ -1052,7 +1057,7 @@ pub async fn run_signal_emitter(
     conn: Connection,
     daemon: CobbleDaemon,
     mut event_rx: mpsc::UnboundedReceiver<DaemonEvent>,
-    health_db: Option<Arc<Mutex<HealthDb>>>,
+    app_db: Option<Arc<Mutex<AppDb>>>,
 ) {
     while let Some(event) = event_rx.recv().await {
         let iface_result = conn
@@ -1125,7 +1130,7 @@ pub async fn run_signal_emitter(
                 let _ = CobbleDaemon::nack_received(emitter, txn as u32).await;
             }
             DaemonEvent::HealthData(batch) => {
-                if let Some(db) = &health_db {
+                if let Some(db) = &app_db {
                     let db = db.clone();
                     let batch_for_db = batch.clone();
                     match tokio::task::spawn_blocking(move || {
@@ -1133,8 +1138,8 @@ pub async fn run_signal_emitter(
                     })
                     .await
                     {
-                        Ok(Err(e)) => warn!("health DB insert failed: {e}"),
-                        Err(e) => warn!("health DB task panicked: {e}"),
+                        Ok(Err(e)) => warn!("app DB insert failed: {e}"),
+                        Err(e) => warn!("app DB task panicked: {e}"),
                         Ok(Ok(())) => {}
                     }
                 }

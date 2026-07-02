@@ -99,7 +99,7 @@ pub struct SleepNightData {
 
 pub fn open(path: &Path) -> anyhow::Result<Connection> {
     let conn = Connection::open(path)
-        .with_context(|| format!("open health DB at {}", path.display()))?;
+        .with_context(|| format!("open app DB at {}", path.display()))?;
     // The daemon writes this DB in WAL mode; without a busy_timeout our reads
     // would fail instantly with SQLITE_BUSY during its writes / WAL checkpoints.
     conn.execute_batch(

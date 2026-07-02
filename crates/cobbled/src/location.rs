@@ -1,31 +1,34 @@
-//! Location acquisition: GeoClue2 (GPS) → IP geolocation fallback.
+//! Location acquisition: GeoClue2 (GPS) → IP geolocation with DB cache.
 //!
-//! * **GeoClue2** (session D-Bus): accurate GPS when the daemon is installed
-//!   and the user has granted location permission.
-//! * **ipapi.co** (free HTTPS API, no key): city-level IP geolocation.
+//! * **GeoClue2** (session D-Bus): accurate GPS when the daemon is installed.
+//! * **ifconfig.me**: gets the current public IP address.
+//! * **ipapi.co** (free HTTPS API): city-level IP geolocation, cached in the
+//!   database to avoid rate limits.
 //! * **Nominatim** (OpenStreetMap): reverse geocodes coordinates to a city name.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tracing::info;
 
+use crate::db::{AppDb, IpLocation};
 use crate::http;
 
-/// Get coordinates and a human-readable city/region name.
+/// Get coordinates and a human-readable city name.
 ///
-/// Tries GeoClue2 first; falls back to IP-based geolocation if GeoClue2 is
-/// not available.
-pub async fn get_location() -> anyhow::Result<(f64, f64, String)> {
+/// Tries GeoClue2 first.  Falls back to IP-based geolocation (cached in the
+/// database, fetched from ipapi.co only if not already cached for the current
+/// IP).
+pub async fn get_location(db: Option<Arc<Mutex<AppDb>>>) -> anyhow::Result<(f64, f64, String)> {
     if let Ok((lat, lon, name)) = try_geoclue().await {
         return Ok((lat, lon, name));
     }
-    try_ip_geolocation().await
+    try_ip_geolocation(db).await
 }
 
 async fn try_geoclue() -> anyhow::Result<(f64, f64, String)> {
     let conn = zbus::Connection::session().await?;
 
-    // Create a GeoClue2 client.
     let reply = conn
         .call_method(
             Some("org.freedesktop.GeoClue2"),
@@ -38,8 +41,7 @@ async fn try_geoclue() -> anyhow::Result<(f64, f64, String)> {
         .map_err(|e| anyhow::anyhow!("GeoClue2 GetClient: {e}"))?;
     let client_path: zbus::zvariant::OwnedObjectPath = reply.body().deserialize()?;
 
-    // Start the client so it begins acquiring location.
-    let _ = conn
+    conn
         .call_method(
             Some("org.freedesktop.GeoClue2"),
             client_path.as_str(),
@@ -47,13 +49,12 @@ async fn try_geoclue() -> anyhow::Result<(f64, f64, String)> {
             "Start",
             &(),
         )
-        .await;
+        .await
+        .map_err(|e| anyhow::anyhow!("GeoClue2 Start: {e}"))?;
 
-    // Wait up to 5 seconds for a location fix.
     let lat = get_prop_f64(&conn, client_path.as_str(), "org.freedesktop.GeoClue2.Client", "Latitude", Duration::from_secs(5)).await?;
     let lon = get_prop_f64(&conn, client_path.as_str(), "org.freedesktop.GeoClue2.Client", "Longitude", Duration::from_secs(5)).await?;
 
-    // Stop the client — we only need a one-shot fix.
     let _ = conn
         .call_method(
             Some("org.freedesktop.GeoClue2"),
@@ -68,7 +69,6 @@ async fn try_geoclue() -> anyhow::Result<(f64, f64, String)> {
     Ok((lat, lon, name))
 }
 
-/// Read a floating-point D-Bus property with a timeout.
 async fn get_prop_f64(
     conn: &zbus::Connection,
     path: &str,
@@ -94,31 +94,72 @@ async fn get_prop_f64(
     Ok(val)
 }
 
-// ── IP Geolocation fallback ───────────────────────────────────────────────
+// ── IP geolocation (with DB cache) ──────────────────────────────────────
 
-/// Use ipapi.co (free, no API key) to get a rough location from the public IP.
-async fn try_ip_geolocation() -> anyhow::Result<(f64, f64, String)> {
+async fn try_ip_geolocation(db: Option<Arc<Mutex<AppDb>>>) -> anyhow::Result<(f64, f64, String)> {
+    // 1. Get current public IP.
+    let ip = match http::http_get_text("https://ifconfig.me").await {
+        Ok(ip) => ip,
+        Err(_) => {
+            // Can't get IP — fall back to uncached ipapi if DB is available,
+            // or just call ipapi directly.
+            return fetch_ipapi_and_build().await;
+        }
+    };
+
+    // 2. Check the database cache.
+    if let Some(ref db) = db {
+        if let Some(loc) = db.lock().unwrap().lookup_ip_location(&ip) {
+            let name = location_name(&loc.city);
+            info!("weather: cached IP location ({name})");
+            return Ok((loc.latitude, loc.longitude, name));
+        }
+    }
+
+    // 3. Not cached — fetch from ipapi.co.
+    let (lat, lon, city, region) = fetch_ipapi_raw().await?;
+    let name = location_name(&city);
+
+    // 4. Store in cache if DB is available.
+    if let Some(ref db) = db {
+        let loc = IpLocation { latitude: lat, longitude: lon, city, region };
+        if let Err(e) = db.lock().unwrap().store_ip_location(&ip, &loc) {
+            tracing::warn!("weather: failed to cache IP location: {e}");
+        }
+    }
+
+    Ok((lat, lon, name))
+}
+
+/// Fetch raw data from ipapi.co.  Returns (lat, lon, city, region).
+async fn fetch_ipapi_raw() -> anyhow::Result<(f64, f64, String, String)> {
     let body = http::http_get("https://ipapi.co/json/").await?;
     let json: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| anyhow::anyhow!("ipapi parse: {e}"))?;
 
     let lat = json["latitude"].as_f64().ok_or_else(|| anyhow::anyhow!("ipapi: missing latitude"))?;
     let lon = json["longitude"].as_f64().ok_or_else(|| anyhow::anyhow!("ipapi: missing longitude"))?;
+    let city = json["city"].as_str().unwrap_or("").to_string();
+    let region = json["region"].as_str().unwrap_or("").to_string();
 
-    let city = json["city"].as_str().unwrap_or("");
-    let name = if !city.is_empty() {
-        city.to_string()
-    } else {
-        "Current Location".to_string()
-    };
-
-    info!("weather: IP-based location {lat:.4},{lon:.4} ({name})");
-    Ok((lat, lon, name))
+    Ok((lat, lon, city, region))
 }
 
-// ── Nominatim reverse geocoding ───────────────────────────────────────────
+/// Fetch from ipapi and build the location result directly (fallback when
+/// we can't get our current IP).
+async fn fetch_ipapi_and_build() -> anyhow::Result<(f64, f64, String)> {
+    let (lat, lon, city, _) = fetch_ipapi_raw().await?;
+    Ok((lat, lon, location_name(&city)))
+}
 
-/// Turn coordinates into a city/region name via OpenStreetMap Nominatim.
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+fn location_name(city: &str) -> String {
+    if city.is_empty() { "Current Location".into() } else { city.to_string() }
+}
+
+// ── Nominatim reverse geocoding ─────────────────────────────────────────
+
 async fn reverse_geocode(lat: f64, lon: f64) -> anyhow::Result<String> {
     let url = format!(
         "https://nominatim.openstreetmap.org/reverse?lat={lat:.6}&lon={lon:.6}&format=json&zoom=10"

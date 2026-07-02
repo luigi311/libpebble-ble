@@ -97,7 +97,7 @@ cat > "${XDG_CONFIG_HOME:-$HOME/.config}/cobbled/config.toml" << 'EOF'
 # address = "E6:94:0A:D4:D5:DC"   # your watch Bluetooth address
 # adapter = "hci0"                # optional, default is hci0
 # verbose = false                  # optional, or use -v at runtime
-# db = "/custom/path/health.db"   # optional, default is XDG_DATA_HOME/cobbled/health.db
+# db = "/custom/path/cobbled.db"   # optional, default is XDG_DATA_HOME/cobbled/cobbled.db
 EOF
 ```
 
@@ -175,7 +175,7 @@ The GUI (`cobble`) can scan for Pebble devices and write the config for you.
 # address = "E6:94:0A:D4:D5:DC"   # your watch Bluetooth address (optional — daemon starts without it)
 # adapter = "hci0"               # optional, default hci0
 # verbose = false                 # optional
-# db = "/custom/path/health.db"  # optional, default XDG_DATA_HOME/cobbled/health.db
+# db = "/custom/path/cobbled.db"  # optional, default XDG_DATA_HOME/cobbled/cobbled.db
 ```
 
 Start as a user service (must be a user service — the notification monitor
@@ -247,7 +247,7 @@ AppMessage values cross D-Bus as `(tag, variant)` pairs where tag is one of
 marshalling transparently.
 
 Health data is stored automatically in SQLite at
-`$XDG_DATA_HOME/cobbled/health.db` (or the path set in `config.toml`).
+`$XDG_DATA_HOME/cobbled/cobbled.db` (or the path set in `config.toml`).
 The `HealthDataReceived` signal fires for each batch so external tools can
 consume raw records without reading the database directly.
 
@@ -263,10 +263,12 @@ consume raw records without reading the database directly.
   - [x] Send
   - [ ] Actions
   - [x] Categorization (Text/Call/Other)
+- [ ] Phone calls
+  - [ ] Actions
 - [x] Weather
-- [ ] Health
+- [x] Health
   - [x] Steps
-  - [ ] Sleep
+  - [x] Sleep
   - [x] Heartrate
 - [x] Watch settings
   - [x] Health profile read (height/weight/age/gender/HRM/HR zones/units)
@@ -275,10 +277,9 @@ consume raw records without reading the database directly.
 - [x] Battery level (read + change notifications)
 - [x] Screenshot (capture watch screen, decoded to RGBA pixels; PNG encoding lives in cobbled)
 - [x] Device management (reboot, recovery, factory reset, core dump, forget/unpair)
-- [ ] Music
+- [x] Music
   - [x] Push now-playing / playback state / volume to the watch
   - [x] Parse inbound control actions (play/pause/next/volume)
-  - [ ] Act on control actions (needs MPRIS wiring)
 - [ ] PBW install
 
 ### cobbled (Daemon)
@@ -289,11 +290,13 @@ consume raw records without reading the database directly.
   - [x] Forwarding
   - [ ] Actions (Dismiss)
   - [x] Categorizations
+- [ ] Phonecalls
+  - [ ] Actions
 - [x] AppMessages
   - [x] External applications
 - [x] Health (data sync + profile/settings read)
 - [x] Watch info + device management (version, color, battery, screenshot, reboot/reset/forget)
-- [x] Music push (SetMusicPlayerInfo / SetMusicTrack / SetMusicPlaybackState / SetMusicVolume; replays now-playing on the watch's GetCurrentTrack; surfaces watch control actions — not acted on yet)
+- [x] Music push (SetMusicPlayerInfo / SetMusicTrack / SetMusicPlaybackState / SetMusicVolume; replays now-playing on the watch's GetCurrentTrack; surfaces watch control actions and acts on them)
 - [x] Weather
 
 Every libpebble-ble capability is exposed over D-Bus and supported by the
