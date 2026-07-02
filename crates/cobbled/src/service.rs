@@ -314,6 +314,8 @@ pub struct CobbleDaemon {
     connection_tx: watch::Sender<bool>,
     /// Forwards watch music-control actions to the MPRIS monitor.
     music_action_tx: mpsc::UnboundedSender<String>,
+    /// Forwards watch phone actions to the call monitor.
+    phone_action_tx: mpsc::UnboundedSender<(String, u32)>,
 }
 
 impl CobbleDaemon {
@@ -325,6 +327,7 @@ impl CobbleDaemon {
         event_tx: mpsc::UnboundedSender<DaemonEvent>,
         db: Option<Arc<Mutex<AppDb>>>,
         music_action_tx: mpsc::UnboundedSender<String>,
+        phone_action_tx: mpsc::UnboundedSender<(String, u32)>,
     ) -> Self {
         let (config_revision, _) = watch::channel(0);
         let (connection_tx, _) = watch::channel(false);
@@ -349,6 +352,7 @@ impl CobbleDaemon {
             })),
             config_revision,
             music_action_tx,
+            phone_action_tx,
             connection_tx,
         }
     }
@@ -383,6 +387,11 @@ impl CobbleDaemon {
     /// emitter to forward watch control actions to the MPRIS monitor.
     pub(crate) fn music_action_tx(&self) -> mpsc::UnboundedSender<String> {
         self.music_action_tx.clone()
+    }
+
+    /// Returns a clone of the phone-action sender.
+    pub(crate) fn phone_action_tx(&self) -> mpsc::UnboundedSender<(String, u32)> {
+        self.phone_action_tx.clone()
     }
 
     pub(crate) fn require_pebble(&self) -> Result<Arc<Pebble>, DaemonError> {
@@ -925,7 +934,7 @@ impl CobbleDaemon {
 
     /// Push an incoming call to the watch (shows caller screen).
     /// `cookie` is an arbitrary u32 echoed back in answer/hangup actions.
-    async fn push_incoming_call(
+    pub(crate) async fn push_incoming_call(
         &self,
         cookie: u32,
         caller_number: String,
@@ -953,7 +962,7 @@ impl CobbleDaemon {
     }
 
     /// Notify the watch that the call is now active (answered).
-    async fn push_call_start(&self, cookie: u32) -> Result<(), DaemonError> {
+    pub(crate) async fn push_call_start(&self, cookie: u32) -> Result<(), DaemonError> {
         let pebble = self.require_pebble()?;
         pebble
             .push_call_start(cookie)
@@ -962,7 +971,7 @@ impl CobbleDaemon {
     }
 
     /// Notify the watch that the call has ended.
-    async fn push_call_end(&self, cookie: u32) -> Result<(), DaemonError> {
+    pub(crate) async fn push_call_end(&self, cookie: u32) -> Result<(), DaemonError> {
         let pebble = self.require_pebble()?;
         pebble
             .push_call_end(cookie)
@@ -1191,6 +1200,8 @@ pub async fn run_signal_emitter(
                 if name == "answer" {
                     let _ = daemon.push_call_start(cookie).await;
                 }
+                // Forward to the call monitor so it can control the modem.
+                let _ = daemon.phone_action_tx().send((name.to_string(), cookie));
             }
             DaemonEvent::AppMessageReceived { uuid, data } => {
                 let wire = encode_wire_dict(&data);

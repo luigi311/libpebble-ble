@@ -13,6 +13,7 @@ use tokio::{signal, signal::unix::SignalKind, sync::mpsc};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod call_monitor;
 mod codec;
 mod config;
 mod config_watcher;
@@ -106,7 +107,10 @@ async fn main() -> anyhow::Result<()> {
     // Channel for forwarding watch music-control actions to the MPRIS monitor.
     let (music_action_tx, music_action_rx) = mpsc::unbounded_channel();
 
-    let daemon = CobbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), config_path.clone(), event_tx, app_db.clone(), music_action_tx);
+    // Channel for forwarding watch phone actions to the call monitor.
+    let (phone_action_tx, phone_action_rx) = mpsc::unbounded_channel();
+
+    let daemon = CobbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), config_path.clone(), event_tx, app_db.clone(), music_action_tx, phone_action_tx);
 
     // Build the session D-Bus connection.
     let conn = zbus::connection::Builder::session()?
@@ -170,11 +174,20 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Start the call monitor: ModemManager / oFono → watch + watch → modem.
+    {
+        let daemon5 = daemon.clone();
+        let rx = phone_action_rx;
+        tokio::spawn(async move {
+            call_monitor::run_call_monitor(daemon5, rx).await;
+        });
+    }
+
     // Start the weather provider: GeoClue2 location → Open-Meteo → watch.
     {
-        let daemon4 = daemon.clone();
+        let daemon6 = daemon.clone();
         tokio::spawn(async move {
-            weather::run_weather(daemon4).await;
+            weather::run_weather(daemon6).await;
         });
     }
 
