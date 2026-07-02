@@ -29,6 +29,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Endpoint {
+    Recovery = 0,
     Time = 11,
     WatchVersion = 16,
     PhoneVersion = 17,
@@ -36,21 +37,30 @@ pub enum Endpoint {
     MusicControl = 32,
     PhoneControl = 33,
     AppMessage = 48,
+    LegacyAppLaunch = 49,
+    AppCustomize = 50,
+    BleControl = 51,
     AppRunState = 52,
-    /// Health sync trigger — phone sends request, watch replies with ACK then
-    /// streams records via the DataLog endpoint.
     HealthSync = 911,
-    BlobDb = 0xB1DB,
-    BlobDbV2 = 0xB2DB,
+    Logs = 2000,
     Ping = 2001,
+    LogDump = 2002,
     Reset = 2003,
-    /// Factory registry (watch color/model lookups).
+    AppLogs = 2006,
+    SystemRegistration = 5000,
     FactoryRegistry = 5001,
     AppFetch = 6001,
-    /// Watch-initiated logging sessions (health, analytics). Sessions are opened,
-    /// data is streamed, then closed. We ACK each message.
-    DataLog = 6778, // 0x1A7A — not 0x6778 (26488)
+    DataLog = 6778,
     Screenshot = 8000,
+    FileInstallManager = 8181,
+    GetBytes = 9000,
+    AudioStreaming = 10000,
+    VoiceControl = 11000,
+    TimelineActions = 11440,
+    AppReorder = 43981,
+    BlobDb = 45531,
+    BlobDbV2 = 45787,
+    PutBytes = 0xBEEF,
 }
 
 impl Endpoint {
@@ -65,8 +75,8 @@ impl Endpoint {
             48 => Some(Self::AppMessage),
             52 => Some(Self::AppRunState),
             911 => Some(Self::HealthSync),
-            0xB1DB => Some(Self::BlobDb),
-            0xB2DB => Some(Self::BlobDbV2),
+            45531 => Some(Self::BlobDb),
+            45787 => Some(Self::BlobDbV2),
             2001 => Some(Self::Ping),
             2003 => Some(Self::Reset),
             5001 => Some(Self::FactoryRegistry),
