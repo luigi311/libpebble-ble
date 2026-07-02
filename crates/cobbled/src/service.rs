@@ -308,6 +308,8 @@ pub struct CobbleDaemon {
     /// Bumped by reload_config so the supervisor can wait event-driven
     /// when no address is configured.
     config_revision: watch::Sender<u64>,
+    /// Forwards watch music-control actions to the MPRIS monitor.
+    music_action_tx: mpsc::UnboundedSender<String>,
 }
 
 impl CobbleDaemon {
@@ -318,6 +320,7 @@ impl CobbleDaemon {
         config_path: PathBuf,
         event_tx: mpsc::UnboundedSender<DaemonEvent>,
         db: Option<Arc<Mutex<HealthDb>>>,
+        music_action_tx: mpsc::UnboundedSender<String>,
     ) -> Self {
         let (config_revision, _) = watch::channel(0);
         Self {
@@ -340,6 +343,7 @@ impl CobbleDaemon {
                 music: MusicState::default(),
             })),
             config_revision,
+            music_action_tx,
         }
     }
 
@@ -357,6 +361,12 @@ impl CobbleDaemon {
     /// Used by the supervisor to wait event-driven when no address is set.
     pub fn config_changed(&self) -> watch::Receiver<u64> {
         self.config_revision.subscribe()
+    }
+
+    /// Returns a clone of the music-action sender; used by the signal
+    /// emitter to forward watch control actions to the MPRIS monitor.
+    pub(crate) fn music_action_tx(&self) -> mpsc::UnboundedSender<String> {
+        self.music_action_tx.clone()
     }
 
     fn require_pebble(&self) -> Result<Arc<Pebble>, DaemonError> {
@@ -726,7 +736,7 @@ impl CobbleDaemon {
     }
 
     /// Tell the watch which media app is playing (now-playing source).
-    async fn set_music_player_info(&self, pkg: String, name: String) -> Result<(), DaemonError> {
+    pub(crate) async fn set_music_player_info(&self, pkg: String, name: String) -> Result<(), DaemonError> {
         let pebble = self.require_pebble()?;
         pebble
             .update_music_player_info(&pkg, &name)
@@ -738,7 +748,7 @@ impl CobbleDaemon {
 
     /// Push the current track metadata. `track_length_ms`/`track_count`/
     /// `track_number` are sent as-is (0 is a valid "unknown" value).
-    async fn set_music_track(
+    pub(crate) async fn set_music_track(
         &self,
         artist: String,
         album: String,
@@ -767,7 +777,7 @@ impl CobbleDaemon {
     /// Push playback state. `state`: 0=paused 1=playing 2=rewinding
     /// 3=fast-forwarding 4=unknown. `shuffle`: 0=unknown 1=off 2=on.
     /// `repeat`: 0=unknown 1=off 2=one 3=all.
-    async fn set_music_playback_state(
+    pub(crate) async fn set_music_playback_state(
         &self,
         state: u8,
         track_position_ms: u32,
@@ -792,7 +802,7 @@ impl CobbleDaemon {
     }
 
     /// Push the current volume (0–100).
-    async fn set_music_volume(&self, volume_percent: u8) -> Result<(), DaemonError> {
+    pub(crate) async fn set_music_volume(&self, volume_percent: u8) -> Result<(), DaemonError> {
         if volume_percent > 100 {
             return Err(DaemonError::Failed(format!(
                 "volume {volume_percent} out of range (0-100)"
@@ -1089,6 +1099,9 @@ pub async fn run_signal_emitter(
                 if action == "get_current_track" {
                     daemon.replay_music_state().await;
                 }
+                // Forward the action to the MPRIS monitor so it can control
+                // the desktop media player (play/pause/next/volume/…).
+                let _ = daemon.music_action_tx().send(action);
             }
             DaemonEvent::AppMessageReceived { uuid, data } => {
                 let wire = encode_wire_dict(&data);
