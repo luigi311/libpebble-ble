@@ -402,7 +402,7 @@ export component AppWindow inherits Window {
                             Toggle { checked <=> root.cfg-verbose; y: (parent.height - self.height) / 2; }
                         }
                     }
-                    FormField { label: "Database Path"; value <=> root.cfg-db; placeholder: "~/.local/share/cobbled/health.db"; }
+                    FormField { label: "Database Path"; value <=> root.cfg-db; placeholder: "~/.local/share/cobbled/cobbled.db"; }
                     Rectangle {
                         height: 52px; border-radius: 10px; background: Palette.accent;
                         Text { text: "Save & Apply"; color: white; font-size: 16px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }

@@ -17,8 +17,17 @@ const VERSION_FW_4_0: u16 = 7;
 const VERSION_FW_4_1: u16 = 8;
 const VERSION_FW_4_3: u16 = 13;
 
-pub struct HealthDb {
+pub struct AppDb {
     conn: Connection,
+}
+
+/// Cached IP geolocation result.
+#[derive(Debug, Clone)]
+pub struct IpLocation {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub city: String,
+    pub region: String,
 }
 
 struct RawRecord {
@@ -27,7 +36,7 @@ struct RawRecord {
     item_size: usize,
 }
 
-impl HealthDb {
+impl AppDb {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -41,7 +50,7 @@ impl HealthDb {
             }
         }
         let conn = Connection::open(path)
-            .with_context(|| format!("open health DB at {}", path.display()))?;
+            .with_context(|| format!("open app DB at {}", path.display()))?;
         #[cfg(unix)]
         if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
             warn!("could not set permissions on {}: {e}", path.display());
@@ -165,7 +174,17 @@ impl HealthDb {
                  (3, 'nap'),
                  (4, 'deep_nap'),
                  (5, 'walk'),
-                 (6, 'run');",
+                 (6, 'run');
+
+             -- Cached IP geolocation
+             CREATE TABLE IF NOT EXISTS ip_locations (
+                 ip         TEXT    PRIMARY KEY,
+                 latitude   REAL    NOT NULL,
+                 longitude  REAL    NOT NULL,
+                 city       TEXT    NOT NULL,
+                 region     TEXT    NOT NULL,
+                 fetched_at INTEGER NOT NULL
+             );"
         )?;
 
         conn.execute_batch(
@@ -438,6 +457,39 @@ impl HealthDb {
                 &item[..item_size],
             ])?;
         }
+        Ok(())
+    }
+
+    // ── IP geolocation cache ────────────────────────────────────────────
+
+    /// Look up a cached IP geolocation result.
+    pub fn lookup_ip_location(&self, ip: &str) -> Option<IpLocation> {
+        self.conn
+            .query_row(
+                "SELECT latitude, longitude, city, region FROM ip_locations WHERE ip = ?1",
+                params![ip],
+                |row| {
+                    Ok(IpLocation {
+                        latitude: row.get(0)?,
+                        longitude: row.get(1)?,
+                        city: row.get(2)?,
+                        region: row.get(3)?,
+                    })
+                },
+            )
+            .ok()
+    }
+
+    /// Store an IP geolocation result in the cache.
+    pub fn store_ip_location(&self, ip: &str, loc: &IpLocation) -> anyhow::Result<()> {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO ip_locations (ip, latitude, longitude, city, region, fetched_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![ip, loc.latitude, loc.longitude, loc.city, loc.region, ts],
+        )?;
         Ok(())
     }
 

@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
     });
     let db_path = config::default_db_path().unwrap_or_else(|_| {
         PathBuf::from(std::env::var("HOME").unwrap_or_default())
-            .join(".local/share/cobbled/health.db")
+            .join(".local/share/cobbled/cobbled.db")
     });
 
     let window = AppWindow::new()?;
@@ -447,7 +447,7 @@ fn update_sleep_nav(w: &AppWindow, period: i32, offset: i32) {
 
 fn reload_workout_chart(window: &AppWindow, db_path: &PathBuf, period: i32, offset: i32) {
     match db::open(db_path) {
-        Err(e) => warn!("cannot open health DB: {e}"),
+        Err(e) => warn!("cannot open DB: {e}"),
         Ok(conn) => match db::load_daily_steps(&conn, period, offset) {
             Err(e) => warn!("load daily steps failed: {e}"),
             Ok(steps) => {
@@ -478,7 +478,7 @@ fn reload_workout_sessions(
         bar_range
     };
     match db::open(db_path) {
-        Err(e) => warn!("cannot open health DB: {e}"),
+        Err(e) => warn!("cannot open DB: {e}"),
         Ok(conn) => match db::load_sessions_filtered(&conn, 1, start, end) {
             Err(e) => warn!("load workout sessions failed: {e}"),
             Ok(sessions) => {
@@ -492,7 +492,7 @@ fn reload_workout_sessions(
 
 fn reload_sleep_chart(window: &AppWindow, db_path: &PathBuf, period: i32, offset: i32) {
     match db::open(db_path) {
-        Err(e) => warn!("cannot open health DB: {e}"),
+        Err(e) => warn!("cannot open DB: {e}"),
         Ok(conn) => match db::load_sleep_bars(&conn, period, offset) {
             Err(e) => warn!("load sleep bars failed: {e}"),
             Ok(bars) => {
@@ -514,7 +514,7 @@ fn reload_sleep_chart(window: &AppWindow, db_path: &PathBuf, period: i32, offset
 
 fn reload_sleep_strip(window: &AppWindow, db_path: &PathBuf, period: i32, offset: i32) {
     match db::open(db_path) {
-        Err(e) => warn!("cannot open health DB: {e}"),
+        Err(e) => warn!("cannot open DB: {e}"),
         Ok(conn) => match db::load_sleep_nights(&conn, period, offset) {
             Err(e) => warn!("load sleep nights failed: {e}"),
             Ok(nights) => {

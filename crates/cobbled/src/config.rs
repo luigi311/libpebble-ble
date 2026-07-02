@@ -14,7 +14,7 @@ pub struct Config {
     /// Enable verbose (TRACE-level) logging
     #[serde(default)]
     pub verbose: bool,
-    /// Path to the health data SQLite database
+    /// Path to the SQLite database
     pub db: Option<PathBuf>,
 }
 

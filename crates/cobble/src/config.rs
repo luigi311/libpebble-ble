@@ -49,7 +49,7 @@ pub fn default_db_path() -> anyhow::Result<PathBuf> {
     } else {
         anyhow::bail!("neither XDG_DATA_HOME nor HOME is set");
     };
-    Ok(base.join("cobbled/health.db"))
+    Ok(base.join("cobbled/cobbled.db"))
 }
 
 pub fn load(path: &Path) -> anyhow::Result<Config> {

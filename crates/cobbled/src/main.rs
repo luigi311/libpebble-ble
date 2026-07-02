@@ -17,13 +17,16 @@ mod codec;
 mod config;
 mod config_watcher;
 mod db;
+mod http;
+mod location;
 mod mpris_monitor;
 mod notification;
 mod notify_monitor;
 mod service;
 mod supervisor;
+mod weather;
 
-use db::HealthDb;
+use db::AppDb;
 use notify_monitor::NotificationMonitor;
 use service::{run_signal_emitter, BUS_NAME, OBJECT_PATH, CobbleDaemon};
 use supervisor::run_supervisor;
@@ -47,10 +50,10 @@ fn default_db_path() -> anyhow::Result<PathBuf> {
     } else {
         anyhow::bail!(
             "neither XDG_DATA_HOME nor HOME is set; \
-             set db in config to specify the health database path explicitly"
+             set db in config to specify the app database path explicitly"
         );
     };
-    Ok(base.join("cobbled/health.db"))
+    Ok(base.join("cobbled/cobbled.db"))
 }
 
 #[tokio::main]
@@ -87,13 +90,13 @@ async fn main() -> anyhow::Result<()> {
         Some(p) => p,
         None => default_db_path()?,
     };
-    let health_db: Option<Arc<Mutex<HealthDb>>> = match HealthDb::open(&db_path) {
+    let app_db: Option<Arc<Mutex<AppDb>>> = match AppDb::open(&db_path) {
         Ok(db) => {
-            info!("health DB opened at {}", db_path.display());
+            info!("app DB opened at {}", db_path.display());
             Some(Arc::new(Mutex::new(db)))
         }
         Err(e) => {
-            warn!("could not open health DB at {}: {e}", db_path.display());
+            warn!("could not open app DB at {}: {e}", db_path.display());
             None
         }
     };
@@ -103,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
     // Channel for forwarding watch music-control actions to the MPRIS monitor.
     let (music_action_tx, music_action_rx) = mpsc::unbounded_channel();
 
-    let daemon = CobbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), config_path.clone(), event_tx, health_db.clone(), music_action_tx);
+    let daemon = CobbleDaemon::new(cfg.address.clone(), cfg.adapter.clone(), config_path.clone(), event_tx, app_db.clone(), music_action_tx);
 
     // Build the session D-Bus connection.
     let conn = zbus::connection::Builder::session()?
@@ -118,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
     let conn_for_signals = conn.clone();
     let daemon_for_signals = daemon.clone();
     tokio::spawn(async move {
-        run_signal_emitter(conn_for_signals, daemon_for_signals, event_rx, health_db).await;
+        run_signal_emitter(conn_for_signals, daemon_for_signals, event_rx, app_db).await;
     });
 
     // Start the desktop notification monitor.
@@ -164,6 +167,14 @@ async fn main() -> anyhow::Result<()> {
                 }
             });
             monitor.run().await;
+        });
+    }
+
+    // Start the weather provider: GeoClue2 location → Open-Meteo → watch.
+    {
+        let daemon4 = daemon.clone();
+        tokio::spawn(async move {
+            weather::run_weather(daemon4).await;
         });
     }
 
