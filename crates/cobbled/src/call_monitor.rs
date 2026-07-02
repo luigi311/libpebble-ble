@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 use zbus::{zvariant::OwnedValue, Connection, MessageStream};
 
 use crate::service::CobbleDaemon;
@@ -297,7 +297,7 @@ async fn handle_watch_action(conn: &Connection, daemon: &CobbleDaemon, map: &Cal
         _ => return,
     };
 
-    info!("call-monitor: {action} → {}/{}", call.bus_name, call.call_path);
+    debug!("call-monitor: {action} → {}/{}", call.bus_name, call.call_path);
     let _ = conn.call_method(Some(call.bus_name.as_str()), call.call_path.as_str(), Some(iface), method, &()).await;
 
     // After a successful answer, transition the watch to the in-call screen.

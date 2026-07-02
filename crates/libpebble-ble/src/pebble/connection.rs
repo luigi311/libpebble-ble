@@ -147,6 +147,7 @@ impl Pebble {
             for attempt in 1u32..=2 {
                 match self.do_pairing(&device).await {
                     Ok(()) => {
+                        info!("pairing completed");
                         if let Err(e) = device.set_trusted(true).await {
                             debug!("could not set Trusted: {e}");
                         }
@@ -362,6 +363,8 @@ impl Pebble {
                         Err(e) => warn!("subscribe to {label} failed: {e}"),
                     }
                 });
+            } else {
+                trace!("fed9 characteristic {label} not found on device");
             }
         }
 

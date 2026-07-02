@@ -850,6 +850,12 @@ impl CobbleDaemon {
         let new_cfg = crate::config::load(&config_path)
             .map_err(|e| DaemonError::Failed(e.to_string()))?;
 
+        debug!(
+            "reload_config: adapter={}, address{}",
+            new_cfg.adapter,
+            if new_cfg.address.is_empty() { " (none)" } else { " set" },
+        );
+
         // Read state.pebble in the same lock scope as the config update so
         // we always disconnect the handle that was live when the new params
         // were applied — no window for the supervisor to slip in a new

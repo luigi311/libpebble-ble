@@ -155,13 +155,16 @@ pub(crate) fn on_pebble_message(message: Vec<u8>, inner: &Arc<Mutex<PebbleInner>
         Some(Endpoint::BlobDbV2) => {
             on_blobdb2_message(payload.to_vec(), inner);
         }
-        _ => {} // unknown endpoint; ignore quietly
+        _ => {
+            trace!("rx unknown endpoint={endpoint_raw} len={}", payload.len());
+        } // unknown endpoint; log at trace for diagnostics
     }
 }
 
 fn on_app_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
     trace!("inbound APP_MESSAGE raw: {} bytes", payload.len());
     let Some(parsed) = parse_app_message(&payload) else {
+        debug!("APP_MESSAGE: failed to parse {} bytes", payload.len());
         return;
     };
     match parsed.cmd {
@@ -201,6 +204,7 @@ fn on_app_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
 
 fn on_datalog_message(payload: Vec<u8>, inner: &Arc<Mutex<PebbleInner>>) {
     let Some((cmd, handle, rest)) = datalog::parse_header(&payload) else {
+        debug!("DataLog: failed to parse header from {} bytes", payload.len());
         return;
     };
 

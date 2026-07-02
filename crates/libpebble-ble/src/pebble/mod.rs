@@ -261,11 +261,14 @@ impl Pebble {
         // Drop the accumulator only if it's still ours and pending (timeout).
         self.clear_screenshot(request_id);
         match result {
-            Ok(Ok(Ok(raw))) => Ok(Screenshot {
-                width: raw.width,
-                height: raw.height,
-                pixels: decode_to_rgba(raw.version, raw.width, raw.height, &raw.data),
-            }),
+            Ok(Ok(Ok(raw))) => {
+                debug!("screenshot captured: {}x{}", raw.width, raw.height);
+                Ok(Screenshot {
+                    width: raw.width,
+                    height: raw.height,
+                    pixels: decode_to_rgba(raw.version, raw.width, raw.height, &raw.data),
+                })
+            }
             Ok(Ok(Err(e))) => Err(PebbleError::Other(e)),
             _ => Err(PebbleError::Other("screenshot timed out".into())),
         }
@@ -431,6 +434,7 @@ impl Pebble {
         if !self.is_connected() {
             return Err(PebbleError::NotConnected);
         }
+        debug!("launching app uuid={app_uuid}");
         let payload = build_app_run_state(AppRunStateCmd::Start, app_uuid)
             .ok_or_else(|| PebbleError::Other(format!("invalid UUID: {app_uuid}")))?;
         self.send_pebble(Endpoint::AppRunState, &payload)
@@ -440,6 +444,7 @@ impl Pebble {
         if !self.is_connected() {
             return Err(PebbleError::NotConnected);
         }
+        debug!("stopping app uuid={app_uuid}");
         let payload = build_app_run_state(AppRunStateCmd::Stop, app_uuid)
             .ok_or_else(|| PebbleError::Other(format!("invalid UUID: {app_uuid}")))?;
         self.send_pebble(Endpoint::AppRunState, &payload)
@@ -609,6 +614,7 @@ impl Pebble {
         if !self.is_connected() {
             return Err(PebbleError::NotConnected);
         }
+        debug!("triggering health data sync");
         // REPORTSESSIONS prompts the watch to open DataLog sessions for pending data.
         self.send_pebble(Endpoint::DataLog, &build_report_sessions())?;
         // HealthSync request additionally triggers a full flush.

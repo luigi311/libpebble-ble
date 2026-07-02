@@ -41,7 +41,7 @@ pub async fn run_supervisor(daemon: CobbleDaemon) {
             continue;
         }
 
-        info!("connecting to watch {address} ...");
+        debug!("connecting to watch {address} ...");
         let pebble = Arc::new(Pebble::new(&address, &adapter));
 
         // Wire handlers before connect so we catch any early events.
@@ -159,6 +159,7 @@ pub async fn run_supervisor(daemon: CobbleDaemon) {
                 // new params rather than calling set_connected with a stale handle.
                 let (cur_addr, cur_adapter) = daemon.current_connection_params();
                 if cur_addr != address || cur_adapter != adapter {
+                    info!("config changed during connect; reconnecting with new params");
                     let _ = pebble.disconnect().await;
                     backoff = 2.0;
                     continue;
@@ -210,4 +211,5 @@ pub async fn run_supervisor(daemon: CobbleDaemon) {
         tokio::time::sleep(std::time::Duration::from_secs_f64(backoff)).await;
         backoff = (backoff * 2.0).min(30.0);
     }
+    info!("supervisor exiting");
 }

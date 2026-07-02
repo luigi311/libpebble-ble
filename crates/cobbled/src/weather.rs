@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::{http, location, service::CobbleDaemon};
 
@@ -51,7 +51,7 @@ pub async fn run_weather(daemon: CobbleDaemon) {
 
 async fn refresh(daemon: &CobbleDaemon, key: [u8; 16]) -> anyhow::Result<()> {
     let (lat, lon, location_name) = location::get_location(daemon.db()).await?;
-    info!("weather: {lat:.4},{lon:.4} ({location_name})");
+    debug!("weather: {lat:.4},{lon:.4} ({location_name})");
 
     let forecast = fetch_forecast(lat, lon).await?;
 

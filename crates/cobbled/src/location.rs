@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tracing::info;
+use tracing::debug;
 
 use crate::db::{AppDb, IpLocation};
 use crate::http;
@@ -23,6 +23,7 @@ pub async fn get_location(db: Option<Arc<Mutex<AppDb>>>) -> anyhow::Result<(f64,
     if let Ok((lat, lon, name)) = try_geoclue().await {
         return Ok((lat, lon, name));
     }
+    debug!("GeoClue2 unavailable; falling back to IP geolocation");
     try_ip_geolocation(db).await
 }
 
@@ -117,11 +118,12 @@ async fn try_ip_geolocation(db: Option<Arc<Mutex<AppDb>>>) -> anyhow::Result<(f6
         && let Some(loc) = db.lock().unwrap().lookup_ip_location(&ip)
     {
         let name = location_name(&loc.city);
-        info!("weather: cached IP location ({name})");
+        debug!("weather: cached IP location ({name})");
         return Ok((loc.latitude, loc.longitude, name));
     }
 
     // 3. Not cached — fetch from ipapi.co.
+    debug!("weather: IP location not cached; querying ipapi.co");
     let (lat, lon, city, region) = fetch_ipapi_raw().await?;
     let name = location_name(&city);
 

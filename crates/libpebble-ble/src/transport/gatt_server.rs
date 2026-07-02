@@ -69,7 +69,9 @@ pub struct PebbleGattServerHandle {
 impl PebbleGattServerHandle {
     /// Queue one whole Pebble Protocol message for transmission to the watch.
     pub fn send(&self, pebble_message: Vec<u8>) {
-        let _ = self.send_tx.send(pebble_message);
+        if self.send_tx.send(pebble_message).is_err() {
+            debug!("GATT send channel closed; message dropped");
+        }
     }
 
     pub fn set_mtu(&self, mtu: usize) {
@@ -99,13 +101,20 @@ async fn write_task(
                 match packet {
                     Some(data) => {
                         if writer.send(&data).await.is_err() {
+                            debug!("GATT write failed; watch disconnected");
                             break;
                         }
                     }
-                    None => break,
+                    None => {
+                        debug!("GATT packet channel closed; writer exiting");
+                        break;
+                    }
                 }
             }
-            _ = writer.closed() => break,
+            _ = writer.closed() => {
+                debug!("GATT writer closed by remote");
+                break;
+            }
         }
     }
     on_disconnect();
@@ -257,6 +266,7 @@ fn handle_ppogatt_in(
     session_ready_notify: &Arc<Notify>,
 ) {
     if packet.is_empty() {
+        trace!("PPoGATT empty packet ignored");
         return;
     }
     let (cmd_byte, serial) = parse_ppogatt_header(packet[0]);

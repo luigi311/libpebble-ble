@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use tokio::sync::Mutex;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 use zbus::{zvariant::OwnedValue, Connection, MessageStream};
 
 use crate::service::CobbleDaemon;
@@ -82,7 +82,7 @@ impl MprisMonitor {
                 }
             }
             if !new_owner.is_empty() {
-                info!("mpris: player {name} appeared");
+                debug!("mpris: player {name} appeared");
                 self.track_player(name).await;
             }
         }
